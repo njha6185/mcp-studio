@@ -14,8 +14,8 @@ import ResourcePanel from "./components/ResourcePanel";
 import ResourceTemplatePanel from "./components/ResourceTemplatePanel";
 import PromptPanel from "./components/PromptPanel";
 import { getOpenAiTemplateUri } from "./widget/detect";
-import { ThemeToggle } from "./theme";
 import InfoTip from "./components/InfoTip";
+import TopMenu from "./components/TopMenu";
 import HistoryPanel, { type HistoryUseMode } from "./components/HistoryPanel";
 import SnapshotsScreen from "./components/SnapshotsScreen";
 import SettingsScreen from "./components/SettingsScreen";
@@ -488,46 +488,45 @@ export default function App() {
           </button>
         </div>
         <div className="topbar-actions">
-          <button className="btn btn-ghost btn-sm" onClick={() => setView("chat")}>
-            💬 Chat
-          </button>
-          <button className="btn btn-ghost btn-sm" onClick={() => setView("snapshots")}>
-            📌 Snapshots
-          </button>
-          <button className="btn btn-ghost btn-sm" onClick={() => setView("settings")}>
-            ⚙
-          </button>
-          <ThemeToggle />
           <button
             className="btn btn-ghost btn-sm"
-            onClick={() => refresh(session.sessionId)}
+            title="Chat simulator — an LLM drives the tools of all connected servers"
+            onClick={() => setView("chat")}
           >
-            ⟳
+            💬 Chat
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
+            title="Pinned tool results — replay them as a regression suite"
+            onClick={() => setView("snapshots")}
+          >
+            📌 Snapshots
           </button>
           <button
             className={`btn btn-ghost btn-sm ${logOpen ? "active" : ""}`}
+            title="Live server notifications and widget actions"
             onClick={() => setLogOpen(!logOpen)}
           >
             Events {log.length > 0 && <span className="log-count">{log.length}</span>}
           </button>
           <button
             className={`btn btn-ghost btn-sm ${historyOpen ? "active" : ""}`}
+            title="Every MCP request this session, plus raw JSON-RPC frames"
             onClick={() => setHistoryOpen(!historyOpen)}
           >
             History{" "}
             {history.length > 0 && <span className="log-count">{history.length}</span>}
           </button>
-          <button
-            className="btn btn-ghost btn-sm"
-            title={
-              sessions.length > 1
-                ? `Disconnect ${serverName} (other servers stay connected)`
-                : "Disconnect"
-            }
-            onClick={() => disconnect()}
-          >
-            Disconnect
-          </button>
+          <TopMenu
+            serverName={serverName}
+            multiServer={sessions.length > 1}
+            onSettings={() => setView("settings")}
+            onRefresh={() => refresh(session.sessionId)}
+            onDisconnect={() => disconnect()}
+            onDisconnectAll={() => {
+              for (const s of [...sessions]) disconnect(s.sessionId);
+            }}
+          />
         </div>
       </header>
 

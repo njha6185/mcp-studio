@@ -1116,6 +1116,50 @@ button { font-family: inherit; }
 }
 .chat-input-row .input { flex: 1; }
 
+/* ---------- top menu ---------- */
+
+.menu-wrap { position: relative; }
+
+.menu-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 150;
+  width: 300px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: var(--card-shadow);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+}
+
+.menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+}
+
+.menu-item:hover { background: var(--bg-hover); }
+.menu-item-label { font-size: 13px; font-weight: 550; }
+.menu-item-desc { font-size: 11.5px; color: var(--text-faint); }
+.menu-item.danger .menu-item-label { color: var(--error); }
+
+.menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 5px 8px;
+}
+
 /* ---------- info tooltips ---------- */
 
 .infotip {
