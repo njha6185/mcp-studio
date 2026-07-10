@@ -135,6 +135,17 @@ export default function App() {
   }
 
   async function connect(params: ConnectParams): Promise<void> {
+    // Already connected to this exact server? Focus it instead of duplicating.
+    const existing = sessionsRef.current.find(
+      (s) => JSON.stringify(s.params) === JSON.stringify(params)
+    );
+    if (existing) {
+      setFocusedId(existing.sessionId);
+      setView("workspace");
+      refresh(existing.sessionId);
+      addLog(`Already connected to ${sessionName(existing)} — focused it`);
+      return;
+    }
     if (sessionsRef.current.length === 0) setHistory([]);
     let info;
     try {
