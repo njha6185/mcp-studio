@@ -43,17 +43,17 @@ and **MCP-UI** (`ui://` embedded resources).
 | **Prompts** | List, argument form, `prompts/get` result view |
 | **History** | Inspector-style bottom drawer with two views: **Requests** (every MCP operation, including widget-initiated calls, with request/response JSON, ↻ replay, ✎ load-into-form, copy-as-curl) and **Raw frames** (every JSON-RPC message on the wire in both directions, including the initialize handshake); session export as JSON |
 | **Events** | Live server notifications — `notifications/message` log entries formatted with level/logger, `tools/list_changed` auto-refreshes, resource-updated notices — plus widget actions; log-level selector sends `logging/setLevel` |
-| **Multi-server** | Connect several MCP servers at once (checkbox-select saved servers, or ＋ in the top bar). Server chips show per-server health/latency; click to switch the workspace focus. Disconnecting one leaves the rest connected, and each server auto-reconnects independently |
-| **Chat simulator** | A separate Chat screen where a real LLM acts as the host — across **all** connected servers at once: tools are namespaced per server (`my-server__tool`), the model picks whichever fits the request, calls are routed to the owning server, and results render as widgets inline in the transcript — a local ChatGPT-developer-mode preview |
+| **Multi-server** | Connect several MCP servers at once (checkbox-select saved servers, or ＋ in the top bar). A dropdown switcher shows per-server health/latency and switches the workspace focus; connecting an already-connected server just refocuses it. Disconnecting one leaves the rest connected, and each server auto-reconnects independently |
+| **Chat simulator** | A separate Chat screen where a real LLM acts as the host — across **all** connected servers at once: tools are namespaced per server (`my-server__tool`), the model picks whichever fits the request, calls are routed to the owning server, and results render as widgets inline in the transcript — a local ChatGPT-developer-mode preview. Conversations **auto-save and resume** (survive navigation and reloads) with a picker to switch between saved chats |
 | **Any LLM provider** | No framework needed: Settings has provider presets (Anthropic, OpenAI, OpenRouter, Groq, Mistral, local Ollama, or any custom OpenAI-compatible base URL). Models are **listed dynamically** from the provider's `/models` endpoint; the proxy speaks both the Anthropic Messages API and the OpenAI Chat Completions API and normalizes tool calling between them |
 | **Widget dev mode** | Point the widget at a local HTML file (Inspect → Dev template): it hot-re-renders on every save, so you iterate on a widget without touching the server |
 | **Snapshots** | 📌 Pin any tool result as an expected output; the Snapshots screen replays pinned calls and shows a structural JSON diff on mismatch (accept-new-result supported) — a lightweight regression suite |
-| **Persistence** | Saved servers, OAuth tokens, snapshots, and settings live in one local JSON file (`server/data/mcp-studio-store.json`) — no database; Settings shows the path and has per-section clear buttons |
+| **Persistence** | Saved servers, OAuth tokens, snapshots, chat conversations, LLM providers, and settings live in one local JSON file (`server/data/mcp-studio-store.json`) — no database; Settings shows the path and has per-section clear buttons |
 | **Config import** | Detect `claude_desktop_config.json` / `.mcp.json` / `.cursor/mcp.json` / `.claude.json` automatically, or paste any config JSON — imported servers become named one-click connections |
 | **Health** | Periodic ping with live latency in the topbar; automatic reconnect with backoff when the connection drops (reuses cached OAuth tokens) |
 | **Completions** | Prompt arguments and resource-template variables autocomplete via `completion/complete` where the server supports it |
 | **Debugging** | Output-schema validation (`schema ✓/✗` badge on results, plus SDK-level validation errors surfaced); progress bar for long-running tools (`notifications/progress`); widget **bridge inspector** (postMessage log, live `window.openai` globals, mock-toolOutput editor to re-render without calling the tool) with Inline / Mobile / Full display presets; resource subscriptions with auto re-read on `updated`; sampling & elicitation dialogs — when the server sends `sampling/createMessage` or `elicitation/create`, a modal lets you answer |
-| **UX** | Full-screen modern UI, light/dark themes (system default, persisted, propagated into widgets via `openai:set_globals`), ⓘ info tooltips explaining every MCP concept inline |
+| **UX** | Full-screen modern UI, light/dark themes (system default, persisted, propagated into widgets via `openai:set_globals`), ⓘ info tooltips explaining every MCP concept inline; low-frequency actions (Settings, theme, refresh, disconnect) live in a ☰ menu so the top bar stays minimal |
 
 ## Architecture
 
@@ -104,30 +104,45 @@ proxy config in `client/vite.config.ts` maps `/api` → `localhost:3400`).
 
 1. **Connect** — pick a transport:
    - *Streamable HTTP* — modern remote servers (`http://host/mcp`). Add
-     headers if the server needs auth.
+     headers if the server needs auth; OAuth-protected servers open a
+     sign-in tab automatically.
    - *SSE* — legacy HTTP transport.
    - *STDIO* — a local server process (`npx …`, `node …`, `python …`,
      `uvx …`). The proxy spawns it and talks over stdin/stdout.
 
-   Recent connections appear below the form for one-click reconnect.
+   **Saved servers** (named, persistent — save the current form or import a
+   config) support one-click connect and checkbox multi-select to connect
+   several at once; recent connections are listed below. With multiple
+   servers connected, the top-bar dropdown switches workspace focus and ＋
+   adds more.
 
-2. **Browse** — the sidebar lists **Tools / Resources / Prompts** with a
-   filter box. ✦ marks tools that render a widget. Resource *templates* are
-   listed under the concrete resources.
+2. **Browse** — the sidebar lists **Tools / Resources / Prompts** (of the
+   focused server) with a filter box. ✦ marks tools that render a widget.
+   Resource *templates* are listed under the concrete resources; template
+   variables and prompt arguments autocomplete where the server supports
+   `completion/complete`.
 
 3. **Call a tool** — fill the generated form (strings, numbers, booleans,
    enums, JSON editors for objects/arrays; required fields are enforced),
    optionally add request `_meta` pairs, hit **▶ Run tool**. Results appear
    in tabs:
-   - **✦ Widget** — the rendered interactive UI (when the tool has one)
+   - **✦ Widget** — the rendered interactive UI (when the tool has one),
+     with display presets, the bridge inspector, mock output, and dev
+     template mode behind **Inspect**
    - **Content** — content blocks + `structuredContent`
    - **Raw** — exact `tools/call` response JSON
 
-4. **Debug** — topbar buttons:
-   - **History** — every request of the session, newest first; click a row
-     for request/response JSON side by side.
-   - **Events** — server notifications and widget actions as they happen.
-   - **⟳ Refresh** — re-fetch tools/resources/prompts.
+   **📌 Pin result** saves the call + response as a regression snapshot.
+
+4. **Top bar** —
+   - **💬 Chat** — the LLM-driven simulator over all connected servers.
+   - **📌 Snapshots** — replay pinned calls and diff against expectations.
+   - **Events** — server notifications and widget actions as they happen,
+     with a log-level selector.
+   - **History** — every request of the session (replay / load-into-form /
+     copy-as-curl) plus the raw JSON-RPC frames; export as JSON.
+   - **☰ menu** — Settings (LLM providers, stored data, OAuth credentials),
+     theme, refresh, and disconnect (per-server, or all).
 
 5. Hover any **ⓘ** icon for an inline explanation of the concept next to it.
 
@@ -245,16 +260,31 @@ All endpoints are JSON over HTTP on the proxy (default `:3400`).
 | `/api/:session/resources/unsubscribe` | POST | `{uri}` |
 | `/api/:session/logging/level` | POST | `{level}` → `logging/setLevel` |
 | `/api/:session/respond` | POST | `{id, result?, error?}` — answers a server-initiated sampling/elicitation request |
+| `/api/:session/ping` | POST | Liveness check → `{ok, latencyMs}` |
+| `/api/:session/complete` | POST | `{ref, argument}` → `completion/complete` (empty when unsupported) |
+| `/api/:session/chat` | POST | `{messages, model?, tools?}` — one LLM completion via the active provider, normalized to Anthropic-style blocks; the browser drives the tool loop |
+| `/api/:session/devwidget` | POST/GET/DELETE | Watch a local template file / read its content / stop — powers widget dev mode |
 | `/api/oauth/callback` | GET | OAuth redirect target (`code`, `state`) — completes the token exchange and connects |
 | `/api/oauth/pending/:id` | GET | Poll an in-flight authorization: `{status: waiting\|ready\|error, session?}` |
+| `/api/configs/detect` | GET | Scan known MCP config file locations |
+| `/api/configs/parse` | POST | `{json}` → normalized server list |
+| `/api/store/servers` | GET/POST/DELETE `:id` | Saved servers CRUD |
+| `/api/store/snapshots` | GET/POST/PUT `:id`/DELETE `:id` | Regression snapshots CRUD |
+| `/api/store/conversations` | GET/POST, GET/DELETE `:id` | Saved chat conversations |
+| `/api/store/oauth` | GET/DELETE | View / forget cached OAuth credentials |
+| `/api/store/settings` | GET | Providers (redacted), active provider + model, store path |
+| `/api/llm/providers` | POST/DELETE `:id` | LLM provider registry |
+| `/api/llm/providers/:id/models` | GET | Live model list from the provider |
+| `/api/llm/active` | POST | `{providerId?, model?}` — select the chat provider/model |
+| `/api/store?section=…` | DELETE | Clear a store section (`savedServers`, `oauth`, `snapshots`, `conversations`, `settings`, `all`) |
 
 **OAuth flow:** `POST /api/connect` to a protected server returns
 `{authRequired, pendingId, authorizationUrl}`. The app opens the URL in a new
 tab; after you authorize, the identity provider redirects to
 `/api/oauth/callback`, the proxy exchanges the code (PKCE) and finishes the
 connection, and the app's poll on `/api/oauth/pending/:id` resolves with the
-session. Tokens and client registrations are cached in-memory per server URL,
-so reconnects skip the flow until the proxy restarts.
+session. Tokens and client registrations are persisted in the JSON store per
+server URL, so reconnects skip the flow (forget them in Settings).
 
 Try it against the SDK's demo:
 `node node_modules/@modelcontextprotocol/sdk/dist/esm/examples/server/simpleStreamableHttp.js --oauth`
@@ -262,37 +292,51 @@ Try it against the SDK's demo:
 
 The `/events` SSE stream carries `notification`, `frame` (raw JSON-RPC frames,
 with the buffered handshake replayed to new subscribers), `progress`,
-`serverRequest`, and `closed` events. `tools/call` accepts an optional `callId`
-used to correlate progress events.
+`serverRequest`, `devwidget` (template file changed), and `closed` events.
+`tools/call` accepts an optional `callId` used to correlate progress events.
 
 ## Project structure
 
 ```
 ├── package.json              # npm workspaces (client, server) + dev script
 ├── server/
-│   └── src/index.ts          # Express proxy: session map, REST endpoints, SSE stream
+│   ├── data/                 # mcp-studio-store.json (gitignored)
+│   └── src/
+│       ├── index.ts          # Express proxy: sessions, frame tap, OAuth, all endpoints
+│       ├── store.ts          # JSON-file persistence (servers, oauth, snapshots, chats, settings)
+│       ├── llm.ts            # provider adapters: Anthropic + OpenAI-compatible, model listing
+│       └── configs.ts        # MCP client config detection/parsing for import
 └── client/
     ├── vite.config.ts        # dev server :5180, /api → :3400 proxy
     └── src/
-        ├── App.tsx           # shell: topbar, sidebar, panels, history, events
+        ├── App.tsx           # shell: multi-session state, topbar, routing, health
         ├── api.ts            # typed proxy client + history tracking
         ├── theme.tsx         # light/dark ThemeProvider + toggle
         ├── types.ts          # MCP protocol types used by the UI
+        ├── schemaValidate.ts # outputSchema checker for results/mocks
+        ├── jsonDiff.ts       # structural diff for snapshot runs
         ├── components/
-        │   ├── ConnectScreen.tsx      # transport picker + recents
-        │   ├── ToolDetail.tsx         # schema form, annotations, _meta, results
+        │   ├── ConnectScreen.tsx      # transports, saved servers, multi-select, import
+        │   ├── ToolDetail.tsx         # schema form, annotations, _meta, progress, results
         │   ├── SchemaForm.tsx         # JSON Schema → form fields
-        │   ├── ResultView.tsx         # Widget/Content/Raw tabs
-        │   ├── ResourcePanel.tsx      # resource read + preview
+        │   ├── ResultView.tsx         # Widget/Content/Raw tabs, schema badge, pin, dev mode
+        │   ├── ResourcePanel.tsx      # resource read + preview + subscriptions
         │   ├── ResourceTemplatePanel.tsx  # {variable} expansion + read
         │   ├── PromptPanel.tsx        # prompt args + get
-        │   ├── HistoryPanel.tsx       # request history drawer
+        │   ├── CompletableInput.tsx   # completion/complete-backed input
+        │   ├── HistoryPanel.tsx       # requests + raw frames drawer, replay, export
+        │   ├── ChatScreen.tsx         # LLM host simulator, multi-server tool routing
+        │   ├── ChatToolWidget.tsx     # widget rendering inside chat transcript
+        │   ├── SnapshotsScreen.tsx    # regression runs + JSON diff
+        │   ├── SettingsScreen.tsx     # LLM providers, OAuth viewer, stored data
+        │   ├── ServerRequestModal.tsx # sampling/elicitation dialogs
+        │   ├── TopMenu.tsx            # ☰ menu (settings/theme/refresh/disconnect)
         │   ├── JsonView.tsx           # JSON block with copy
         │   └── InfoTip.tsx            # ⓘ hover/focus tooltips
         └── widget/
             ├── detect.ts     # which convention (if any) a tool/result uses
             ├── bridge.ts     # the injected window.openai bridge script
-            └── WidgetFrame.tsx  # sandboxed iframe host + postMessage router
+            └── WidgetFrame.tsx  # sandboxed iframe host, bridge inspector, presets
 ```
 
 ## Troubleshooting
@@ -322,6 +366,11 @@ used to correlate progress events.
   restricted to `http(s)`.
 - The proxy can launch arbitrary local commands (that's what the STDIO
   transport is). **Never expose port 3400 beyond localhost.**
-- Headers you enter (e.g. bearer tokens) are sent to the proxy and stored in
-  browser localStorage as part of "recent connections" — clear them there if
-  the machine is shared.
+- Headers you enter (e.g. bearer tokens) are stored in browser localStorage as
+  part of "recent connections", and saved servers / OAuth tokens / LLM API
+  keys / chat transcripts live in plaintext in
+  `server/data/mcp-studio-store.json`. On a shared machine, use the clear
+  buttons in Settings (or delete the file).
+- LLM API keys are only ever sent to the base URL you configured for that
+  provider; chat transcripts (including tool results) are sent to the active
+  LLM provider as conversation context.
