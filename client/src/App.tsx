@@ -431,29 +431,43 @@ export default function App() {
       <header className="topbar">
         <div className="topbar-brand">◈ MCP Studio</div>
         <div className="topbar-servers">
-          {sessions.map((s) => {
-            const isFocused = s.sessionId === session.sessionId;
-            const latency = latencyMap[s.sessionId];
-            return (
-              <button
-                key={s.sessionId}
-                className={`server-chip ${isFocused ? "active" : ""}`}
-                title={
-                  isFocused ? "Focused server" : "Click to focus this server's workspace"
-                }
-                onClick={() => focusSession(s.sessionId)}
-              >
-                <span
-                  className="status-dot"
-                  style={latency === null ? { background: "var(--error)", boxShadow: "none" } : undefined}
-                />
-                {sessionName(s)}
-                {typeof latency === "number" && (
-                  <span className="field-type">{latency} ms</span>
-                )}
-              </button>
-            );
-          })}
+          <span
+            className="status-dot"
+            style={
+              latencyMap[session.sessionId] === null
+                ? { background: "var(--error)", boxShadow: "none" }
+                : undefined
+            }
+          />
+          {sessions.length > 1 ? (
+            <select
+              className="server-select"
+              title="Switch which server the workspace is focused on — Chat always uses all connected servers"
+              value={session.sessionId}
+              onChange={(e) => focusSession(e.target.value)}
+            >
+              {sessions.map((s) => {
+                const latency = latencyMap[s.sessionId];
+                return (
+                  <option key={s.sessionId} value={s.sessionId}>
+                    {sessionName(s)}
+                    {typeof latency === "number" ? ` · ${latency} ms` : ""}
+                    {latency === null ? " · offline" : ""}
+                  </option>
+                );
+              })}
+            </select>
+          ) : (
+            <span className="topbar-server-name">
+              {serverName}
+              {session.serverInfo?.version && (
+                <span className="field-type"> v{session.serverInfo.version}</span>
+              )}
+              {typeof latencyMap[session.sessionId] === "number" && (
+                <span className="field-type"> {latencyMap[session.sessionId]} ms</span>
+              )}
+            </span>
+          )}
           <button
             className="server-chip add"
             title="Connect another MCP server"

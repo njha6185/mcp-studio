@@ -108,9 +108,26 @@ button { font-family: inherit; }
 .topbar-servers {
   display: flex;
   align-items: center;
-  gap: 6px;
-  overflow-x: auto;
+  gap: 8px;
   min-width: 0;
+}
+
+.server-select {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 8px;
+  max-width: 320px;
+  cursor: pointer;
+}
+.server-select:hover { border-color: var(--border-strong); }
+
+.topbar-server-name {
+  color: var(--text-dim);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .server-chip {
