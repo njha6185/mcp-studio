@@ -16,6 +16,8 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   store,
   persist,
@@ -896,6 +898,22 @@ app.post("/api/:sessionId/chat", async (req, res) => {
   }
 });
 
+// Serve the built client (client/dist) when it exists, so production is a
+// single process: `npm run build && npm run start -w server`.
+const clientDist = path.join(dirnameOf(), "..", "..", "client", "dist");
+function dirnameOf() {
+  return path.dirname(fileURLToPath(import.meta.url));
+}
+if (fs.existsSync(path.join(clientDist, "index.html"))) {
+  app.use(express.static(clientDist));
+  app.get(/^\/(?!api\/).*/, (_req, res) =>
+    res.sendFile(path.join(clientDist, "index.html"))
+  );
+}
+
 app.listen(PORT, () => {
-  console.log(`MCP proxy listening on http://localhost:${PORT}`);
+  const ui = fs.existsSync(path.join(clientDist, "index.html"))
+    ? " (serving the built UI too)"
+    : "";
+  console.log(`MCP proxy listening on http://localhost:${PORT}${ui}`);
 });
