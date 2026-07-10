@@ -6,22 +6,69 @@ import JsonView from "./JsonView";
 import InfoTip from "./InfoTip";
 import * as api from "../api";
 
-interface Props {
+export interface ChatSession {
   sessionId: string;
-  tools: McpTool[];
   serverName: string;
+}
+
+interface Props {
+  sessions: ChatSession[];
   onClose: () => void;
   onHostEvent: (message: string) => void;
 }
 
 interface ToolRun {
   toolName: string;
+  serverName: string;
+  sessionId: string;
   args: Record<string, unknown>;
   result?: ToolCallResult;
   error?: string;
 }
 
+/** A tool exposed to the model, mapped back to its owning server. */
+interface RoutedTool {
+  exposedName: string;
+  tool: McpTool;
+  sessionId: string;
+  serverName: string;
+}
+
 const MAX_TOOL_ROUNDS = 10;
+
+function slugify(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "server"
+  );
+}
+
+/** Namespace tools as <server>__<tool> when several servers are connected. */
+function buildRoutedTools(
+  perSession: { session: ChatSession; tools: McpTool[] }[]
+): RoutedTool[] {
+  const multi = perSession.length > 1;
+  const usedSlugs = new Map<string, number>();
+  const routed: RoutedTool[] = [];
+  for (const { session, tools } of perSession) {
+    let slug = slugify(session.serverName);
+    const seen = usedSlugs.get(slug) ?? 0;
+    usedSlugs.set(slug, seen + 1);
+    if (seen > 0) slug = `${slug}-${seen + 1}`;
+    for (const tool of tools) {
+      routed.push({
+        exposedName: multi ? `${slug}__${tool.name}`.slice(0, 128) : tool.name,
+        tool,
+        sessionId: session.sessionId,
+        serverName: session.serverName,
+      });
+    }
+  }
+  return routed;
+}
 
 function toolResultText(result: ToolCallResult): string {
   const text = (result.content ?? [])
@@ -33,9 +80,10 @@ function toolResultText(result: ToolCallResult): string {
   return (text + structured).slice(0, 8000) || "(empty result)";
 }
 
-export default function ChatScreen({ sessionId, tools, serverName, onClose, onHostEvent }: Props) {
+export default function ChatScreen({ sessions, onClose, onHostEvent }: Props) {
   const [messages, setMessages] = useState<AnthropicMessage[]>([]);
   const [toolRuns, setToolRuns] = useState<Record<string, ToolRun>>({});
+  const [routedTools, setRoutedTools] = useState<RoutedTool[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,16 +95,43 @@ export default function ChatScreen({ sessionId, tools, serverName, onClose, onHo
     api.getSettings().then((s) => setHasKey(s.hasApiKey));
   }, []);
 
+  // Aggregate tools from every connected server.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(
+      sessions.map(async (session) => ({
+        session,
+        tools: await api
+          .listTools(session.sessionId)
+          .then((r) => r.tools ?? [])
+          .catch(() => [] as McpTool[]),
+      }))
+    ).then((perSession) => {
+      if (!cancelled) setRoutedTools(buildRoutedTools(perSession));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessions.map((s) => s.sessionId).join(",")]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, busy]);
 
   async function send() {
     const text = input.trim();
-    if (!text || busy) return;
+    if (!text || busy || sessions.length === 0) return;
     setInput("");
     setError(null);
     setBusy(true);
+
+    const anthropicTools = routedTools.map((rt) => ({
+      name: rt.exposedName,
+      description:
+        (sessions.length > 1 ? `[server: ${rt.serverName}] ` : "") +
+        (rt.tool.description ?? ""),
+      input_schema: rt.tool.inputSchema ?? { type: "object" },
+    }));
 
     const transcript: AnthropicMessage[] = [
       ...messages,
@@ -66,7 +141,12 @@ export default function ChatScreen({ sessionId, tools, serverName, onClose, onHo
 
     try {
       for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-        const resp = await api.chat(sessionId, transcript);
+        const resp = await api.chat(
+          sessions[0].sessionId,
+          transcript,
+          undefined,
+          anthropicTools
+        );
         setUsage((u) => ({
           input: u.input + (resp.usage?.input_tokens ?? 0),
           output: u.output + (resp.usage?.output_tokens ?? 0),
@@ -80,13 +160,35 @@ export default function ChatScreen({ sessionId, tools, serverName, onClose, onHo
         const resultBlocks: AnthropicContentBlock[] = [];
         for (const block of toolUses) {
           const id = block.id as string;
-          const name = String(block.name);
+          const exposedName = String(block.name);
+          const routed = routedTools.find((rt) => rt.exposedName === exposedName);
           const args = (block.input as Record<string, unknown>) ?? {};
-          setToolRuns((prev) => ({ ...prev, [id]: { toolName: name, args } }));
-          onHostEvent(`Chat model called tool "${name}"`);
+
+          if (!routed) {
+            resultBlocks.push({
+              type: "tool_result",
+              tool_use_id: id,
+              content: `Unknown tool: ${exposedName}`,
+              is_error: true,
+            });
+            continue;
+          }
+
+          setToolRuns((prev) => ({
+            ...prev,
+            [id]: {
+              toolName: routed.tool.name,
+              serverName: routed.serverName,
+              sessionId: routed.sessionId,
+              args,
+            },
+          }));
+          onHostEvent(
+            `Chat model called "${routed.tool.name}" on ${routed.serverName}`
+          );
           try {
-            const result = await api.callTool(sessionId, name, args);
-            setToolRuns((prev) => ({ ...prev, [id]: { toolName: name, args, result } }));
+            const result = await api.callTool(routed.sessionId, routed.tool.name, args);
+            setToolRuns((prev) => ({ ...prev, [id]: { ...prev[id], result } }));
             resultBlocks.push({
               type: "tool_result",
               tool_use_id: id,
@@ -95,10 +197,7 @@ export default function ChatScreen({ sessionId, tools, serverName, onClose, onHo
             });
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            setToolRuns((prev) => ({
-              ...prev,
-              [id]: { toolName: name, args, error: message },
-            }));
+            setToolRuns((prev) => ({ ...prev, [id]: { ...prev[id], error: message } }));
             resultBlocks.push({
               type: "tool_result",
               tool_use_id: id,
@@ -128,12 +227,15 @@ export default function ChatScreen({ sessionId, tools, serverName, onClose, onHo
     if (block.type === "tool_use") {
       const id = block.id as string;
       const run = toolRuns[id];
-      const tool = tools.find((t) => t.name === block.name);
+      const routed = routedTools.find((rt) => rt.exposedName === String(block.name));
       return (
         <div key={key} className="chat-tool-card">
           <details>
             <summary>
-              <span className="badge badge-mono">🔧 {String(block.name)}</span>
+              <span className="badge badge-mono">🔧 {run?.toolName ?? String(block.name)}</span>
+              {sessions.length > 1 && run && (
+                <span className="badge">{run.serverName}</span>
+              )}
               {!run?.result && !run?.error && <span className="field-type">running…</span>}
               {run?.error && <span className="badge badge-error">failed</span>}
               {run?.result?.isError && <span className="badge badge-error">tool error</span>}
@@ -142,10 +244,10 @@ export default function ChatScreen({ sessionId, tools, serverName, onClose, onHo
             {run?.error && <div className="result-error">⚠ {run.error}</div>}
             {run?.result && <JsonView data={run.result} label="result" />}
           </details>
-          {run?.result && tool && (
+          {run?.result && routed && (
             <ChatToolWidget
-              sessionId={sessionId}
-              tool={tool}
+              sessionId={routed.sessionId}
+              tool={routed.tool}
               args={run.args}
               result={run.result}
               onHostEvent={onHostEvent}
@@ -157,6 +259,11 @@ export default function ChatScreen({ sessionId, tools, serverName, onClose, onHo
     return null;
   }
 
+  const serverSummary =
+    sessions.length === 1
+      ? sessions[0].serverName
+      : `${sessions.length} servers: ${sessions.map((s) => s.serverName).join(", ")}`;
+
   return (
     <div className="screen">
       <div className="screen-header">
@@ -165,9 +272,9 @@ export default function ChatScreen({ sessionId, tools, serverName, onClose, onHo
         </button>
         <h2>
           Chat simulator
-          <InfoTip text="A real Claude model acts as the host: it sees this server's tools, decides when to call them, and tool results render as widgets inline — like previewing your app inside ChatGPT, but local." />
+          <InfoTip text="A real Claude model acts as the host: it sees the tools of every connected server (namespaced per server), decides which to call, and results render as widgets inline — like previewing your apps inside ChatGPT, but local." />
           <span className="field-type" style={{ marginLeft: 8 }}>
-            {serverName} · {tools.length} tools
+            {serverSummary} · {routedTools.length} tools
           </span>
         </h2>
         <span className="screen-header-actions">
@@ -202,9 +309,9 @@ export default function ChatScreen({ sessionId, tools, serverName, onClose, onHo
           <div className="empty-state">
             <div className="empty-state-icon">💬</div>
             <p>
-              Ask something that would make the model use this server's tools —
-              you'll see its reasoning, the calls it makes, and the widgets render
-              inline.
+              Ask something that would make the model use the connected servers'
+              tools — you'll see its reasoning, the calls it makes (and which server
+              they go to), and the widgets render inline.
             </p>
           </div>
         )}

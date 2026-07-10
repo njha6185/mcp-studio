@@ -105,6 +105,36 @@ button { font-family: inherit; }
   font-size: 13px;
 }
 
+.topbar-servers {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  min-width: 0;
+}
+
+.server-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.server-chip:hover { border-color: var(--border-strong); color: var(--text); }
+.server-chip.active {
+  background: var(--accent-soft);
+  border-color: rgba(109, 139, 255, 0.4);
+  color: var(--text);
+}
+.server-chip.add { padding: 5px 10px; font-weight: 700; }
+
 .status-dot {
   width: 8px;
   height: 8px;
@@ -381,7 +411,8 @@ button { font-family: inherit; }
 }
 .import-found-row .recent-target { flex: 1; }
 
-.saved-item { display: flex; align-items: center; gap: 4px; }
+.saved-item { display: flex; align-items: center; gap: 8px; }
+.saved-item input[type="checkbox"] { accent-color: var(--accent); flex-shrink: 0; }
 .saved-connect {
   flex: 1;
   display: flex;

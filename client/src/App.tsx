@@ -42,10 +42,19 @@ interface LogEntry {
   message: string;
 }
 
+export interface ActiveSession extends SessionInfo {
+  params: ConnectParams;
+}
+
+export function sessionName(s: SessionInfo): string {
+  return s.serverInfo?.title ?? s.serverInfo?.name ?? "MCP server";
+}
+
 let logId = 0;
 
 export default function App() {
-  const [session, setSession] = useState<SessionInfo | null>(null);
+  const [sessions, setSessions] = useState<ActiveSession[]>([]);
+  const [focusedId, setFocusedId] = useState<string | null>(null);
   const [tools, setTools] = useState<McpTool[]>([]);
   const [resources, setResources] = useState<McpResource[]>([]);
   const [templates, setTemplates] = useState<McpResourceTemplate[]>([]);
@@ -57,20 +66,26 @@ export default function App() {
   const [logOpen, setLogOpen] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [frames, setFrames] = useState<RawFrame[]>([]);
+  const [framesBySession, setFramesBySession] = useState<Record<string, RawFrame[]>>({});
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
-  const [serverRequests, setServerRequests] = useState<ServerRequest[]>([]);
+  const [serverRequests, setServerRequests] = useState<
+    (ServerRequest & { sessionId: string })[]
+  >([]);
   const [resourceUpdate, setResourceUpdate] = useState<{ uri: string; ts: number } | null>(null);
   const [prefill, setPrefill] = useState<ToolPrefill | null>(null);
   const [logLevel, setLogLevel] = useState("");
   const [connectStatus, setConnectStatus] = useState<string | null>(null);
-  const [view, setView] = useState<"workspace" | "chat" | "snapshots" | "settings">(
-    "workspace"
-  );
+  const [view, setView] = useState<
+    "workspace" | "chat" | "snapshots" | "settings" | "addserver"
+  >("workspace");
   const [devTick, setDevTick] = useState(0);
-  const [latency, setLatency] = useState<number | null>(null);
-  const [health, setHealth] = useState<"ok" | "reconnecting" | "lost">("ok");
-  const [lastParams, setLastParams] = useState<ConnectParams | null>(null);
+  const [latencyMap, setLatencyMap] = useState<Record<string, number | null>>({});
+
+  const session = sessions.find((s) => s.sessionId === focusedId) ?? sessions[0] ?? null;
+  const sessionsRef = useRef(sessions);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
 
   useEffect(() => {
     return api.subscribeHistory((entry) => {
@@ -95,27 +110,32 @@ export default function App() {
     );
   }, []);
 
-  const refresh = useCallback(
-    async (sessionId: string) => {
-      const [t, r, rt, p] = await Promise.allSettled([
-        api.listTools(sessionId),
-        api.listResources(sessionId),
-        api.listResourceTemplates(sessionId),
-        api.listPrompts(sessionId),
-      ]);
-      setTools(t.status === "fulfilled" ? t.value.tools ?? [] : []);
-      setResources(r.status === "fulfilled" ? r.value.resources ?? [] : []);
-      setTemplates(rt.status === "fulfilled" ? rt.value.resourceTemplates ?? [] : []);
-      setPrompts(p.status === "fulfilled" ? p.value.prompts ?? [] : []);
-      if (t.status === "fulfilled" && (t.value.tools?.length ?? 0) > 0) {
-        setSelection({ kind: "tool", name: t.value.tools[0].name });
-      }
-    },
-    []
-  );
+  const refresh = useCallback(async (sessionId: string, autoSelect = true) => {
+    const [t, r, rt, p] = await Promise.allSettled([
+      api.listTools(sessionId),
+      api.listResources(sessionId),
+      api.listResourceTemplates(sessionId),
+      api.listPrompts(sessionId),
+    ]);
+    setTools(t.status === "fulfilled" ? t.value.tools ?? [] : []);
+    setResources(r.status === "fulfilled" ? r.value.resources ?? [] : []);
+    setTemplates(rt.status === "fulfilled" ? rt.value.resourceTemplates ?? [] : []);
+    setPrompts(p.status === "fulfilled" ? p.value.prompts ?? [] : []);
+    if (autoSelect && t.status === "fulfilled" && (t.value.tools?.length ?? 0) > 0) {
+      setSelection({ kind: "tool", name: t.value.tools[0].name });
+    }
+  }, []);
 
-  async function connect(params: ConnectParams) {
-    setHistory([]);
+  function focusSession(sessionId: string) {
+    if (sessionId === session?.sessionId) return;
+    setFocusedId(sessionId);
+    setSelection(null);
+    setPrefill(null);
+    refresh(sessionId);
+  }
+
+  async function connect(params: ConnectParams): Promise<void> {
+    if (sessionsRef.current.length === 0) setHistory([]);
     let info;
     try {
       info = await api.connect(params);
@@ -131,104 +151,139 @@ export default function App() {
       setConnectStatus(null);
     }
     saveRecent(params);
-    setLastParams(params);
-    setHealth("ok");
-    setLatency(null);
-    setSession(info);
+    const active: ActiveSession = { ...info, params };
+    setSessions((prev) => [...prev, active]);
+    setFocusedId(active.sessionId);
+    setView("workspace");
     addLog(
       `Connected to ${info.serverInfo?.name ?? "server"} v${info.serverInfo?.version ?? "?"}`
     );
-    await refresh(info.sessionId);
+    await refresh(active.sessionId);
   }
 
-  async function disconnect() {
-    if (session) {
-      await api.disconnect(session.sessionId).catch(() => {});
-    }
-    setSession(null);
-    setTools([]);
-    setResources([]);
-    setPrompts([]);
-    setSelection(null);
-    setFrames([]);
-    setProgress(null);
-    setServerRequests([]);
-    setPrefill(null);
-    setLogLevel("");
+  async function connectMany(paramsList: ConnectParams[]) {
+    for (const params of paramsList) await connect(params);
   }
 
-  useEffect(() => {
-    if (!session) return;
-    setFrames([]);
-    const unsubscribe = api.subscribeEvents(session.sessionId, {
-      onNotification: (n) => {
-        const notif = n as { method?: string; params?: Record<string, unknown> };
-        const method = notif.method ?? "notification";
-        if (method === "notifications/message") {
-          const p = notif.params ?? {};
-          const data = typeof p.data === "string" ? p.data : JSON.stringify(p.data);
-          addLog(`[${p.level ?? "log"}]${p.logger ? ` ${p.logger}:` : ""} ${data}`);
-        } else if (method === "notifications/resources/updated") {
-          const uri = String(notif.params?.uri ?? "");
-          addLog(`resource updated: ${uri}`);
-          setResourceUpdate({ uri, ts: Date.now() });
-        } else {
-          addLog(`⤷ ${method}`);
+  async function disconnect(sessionId?: string) {
+    const target = sessionId ?? session?.sessionId;
+    if (!target) return;
+    await api.disconnect(target).catch(() => {});
+    removeSession(target);
+  }
+
+  function removeSession(sessionId: string) {
+    setSessions((prev) => {
+      const next = prev.filter((s) => s.sessionId !== sessionId);
+      if (focusedId === sessionId || !next.some((s) => s.sessionId === focusedId)) {
+        const nextFocus = next[0]?.sessionId ?? null;
+        setFocusedId(nextFocus);
+        setSelection(null);
+        setPrefill(null);
+        if (nextFocus) refresh(nextFocus);
+        else {
+          setTools([]);
+          setResources([]);
+          setTemplates([]);
+          setPrompts([]);
+          setProgress(null);
+          setLogLevel("");
         }
-        if (method === "notifications/tools/list_changed") refresh(session.sessionId);
-      },
-      onFrame: (f) => setFrames((prev) => [...prev, f].slice(-1000)),
-      onProgress: (p) => setProgress(p),
-      onServerRequest: (r) => {
-        addLog(`server request: ${r.method}`);
-        setServerRequests((prev) => [...prev, r]);
-      },
-      onDevWidget: () => setDevTick((t) => t + 1),
-      onClosed: () => {
-        addLog("Connection closed by server — attempting to reconnect");
-        setSession(null);
-        setHealth("reconnecting");
-        reconnect();
-      },
-    });
-    return unsubscribe;
-  }, [session?.sessionId]);
-
-  // Auto-reconnect with backoff after the connection drops.
-  const reconnect = useCallback(async () => {
-    const params = lastParamsRef.current;
-    if (!params) return;
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      await new Promise((r) => setTimeout(r, Math.min(15000, attempt * 2000)));
-      try {
-        let info = await api.connect(params);
-        if ("authRequired" in info) break; // needs user interaction — give up silently
-        setSession(info);
-        setHealth("ok");
-        addLog(`Reconnected (attempt ${attempt})`);
-        await refresh(info.sessionId);
-        return;
-      } catch {
-        addLog(`Reconnect attempt ${attempt} failed`);
       }
-    }
-    setHealth("lost");
-  }, []);
-  const lastParamsRef = useRef<ConnectParams | null>(null);
-  useEffect(() => {
-    lastParamsRef.current = lastParams;
-  }, [lastParams]);
+      return next;
+    });
+    setServerRequests((prev) => prev.filter((r) => r.sessionId !== sessionId));
+    setFramesBySession((prev) => {
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+  }
 
-  // Periodic ping for latency + liveness.
+  // Auto-reconnect with backoff after a connection drops.
+  const reconnect = useCallback(
+    async (params: ConnectParams, name: string) => {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        await new Promise((r) => setTimeout(r, Math.min(15000, attempt * 2000)));
+        try {
+          let info = await api.connect(params);
+          if ("authRequired" in info) return; // needs user interaction — give up silently
+          const active: ActiveSession = { ...info, params };
+          setSessions((prev) => [...prev, active]);
+          setFocusedId((cur) => cur ?? active.sessionId);
+          addLog(`Reconnected to ${name} (attempt ${attempt})`);
+          refresh(active.sessionId);
+          return;
+        } catch {
+          addLog(`Reconnect to ${name}: attempt ${attempt} failed`);
+        }
+      }
+      addLog(`Gave up reconnecting to ${name}`);
+    },
+    [refresh, addLog]
+  );
+
+  // One event subscription per connected session.
+  const sessionIds = sessions.map((s) => s.sessionId).join(",");
   useEffect(() => {
-    if (!session) return;
+    if (sessions.length === 0) return;
+    const unsubscribers = sessions.map((s) => {
+      const name = sessionName(s);
+      const tag = sessions.length > 1 ? `[${name}] ` : "";
+      setFramesBySession((prev) => ({ ...prev, [s.sessionId]: [] }));
+      return api.subscribeEvents(s.sessionId, {
+        onNotification: (n) => {
+          const notif = n as { method?: string; params?: Record<string, unknown> };
+          const method = notif.method ?? "notification";
+          if (method === "notifications/message") {
+            const p = notif.params ?? {};
+            const data = typeof p.data === "string" ? p.data : JSON.stringify(p.data);
+            addLog(`${tag}[${p.level ?? "log"}]${p.logger ? ` ${p.logger}:` : ""} ${data}`);
+          } else if (method === "notifications/resources/updated") {
+            const uri = String(notif.params?.uri ?? "");
+            addLog(`${tag}resource updated: ${uri}`);
+            setResourceUpdate({ uri, ts: Date.now() });
+          } else {
+            addLog(`${tag}⤷ ${method}`);
+          }
+          if (method === "notifications/tools/list_changed" && s.sessionId === focusedId)
+            refresh(s.sessionId, false);
+        },
+        onFrame: (f) =>
+          setFramesBySession((prev) => ({
+            ...prev,
+            [s.sessionId]: [...(prev[s.sessionId] ?? []), f].slice(-1000),
+          })),
+        onProgress: (p) => setProgress(p),
+        onServerRequest: (r) => {
+          addLog(`${tag}server request: ${r.method}`);
+          setServerRequests((prev) => [...prev, { ...r, sessionId: s.sessionId }]);
+        },
+        onDevWidget: () => setDevTick((t) => t + 1),
+        onClosed: () => {
+          addLog(`${tag}connection closed — attempting to reconnect`);
+          removeSession(s.sessionId);
+          reconnect(s.params, name);
+        },
+      });
+    });
+    return () => unsubscribers.forEach((u) => u());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionIds]);
+
+  // Periodic ping for latency + liveness, across all sessions.
+  useEffect(() => {
+    if (sessions.length === 0) return;
     let cancelled = false;
     const tick = async () => {
-      try {
-        const res = await api.ping(session.sessionId);
-        if (!cancelled) setLatency(res.latencyMs);
-      } catch {
-        if (!cancelled) setLatency(null);
+      for (const s of sessionsRef.current) {
+        try {
+          const res = await api.ping(s.sessionId);
+          if (!cancelled)
+            setLatencyMap((prev) => ({ ...prev, [s.sessionId]: res.latencyMs }));
+        } catch {
+          if (!cancelled) setLatencyMap((prev) => ({ ...prev, [s.sessionId]: null }));
+        }
       }
     };
     tick();
@@ -237,7 +292,8 @@ export default function App() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [session?.sessionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionIds]);
 
   const handleHistoryUse = useCallback(
     (entry: HistoryEntry, mode: HistoryUseMode) => {
@@ -262,10 +318,10 @@ export default function App() {
 
   async function answerServerRequest(result?: unknown, error?: string) {
     const current = serverRequests[0];
-    if (!current || !session) return;
+    if (!current) return;
     setServerRequests((prev) => prev.slice(1));
     await api
-      .respondToServerRequest(session.sessionId, current.id, result, error)
+      .respondToServerRequest(current.sessionId, current.id, result, error)
       .catch((err) => addLog(`Failed to respond: ${err.message}`));
   }
 
@@ -309,25 +365,32 @@ export default function App() {
     return <SettingsScreen onClose={() => setView("workspace")} />;
   }
 
+  if (view === "addserver" && session) {
+    return (
+      <div className="addserver-wrap">
+        <ConnectScreen
+          onConnect={connect}
+          onConnectMany={connectMany}
+          status={connectStatus}
+          onOpenSettings={() => setView("settings")}
+          onBack={() => setView("workspace")}
+        />
+      </div>
+    );
+  }
+
   if (!session) {
     return (
       <ConnectScreen
         onConnect={connect}
-        status={
-          connectStatus ??
-          (health === "reconnecting"
-            ? "Connection lost — reconnecting…"
-            : health === "lost"
-              ? "Connection lost and reconnect failed — connect again manually."
-              : null)
-        }
+        onConnectMany={connectMany}
+        status={connectStatus}
         onOpenSettings={() => setView("settings")}
       />
     );
   }
 
-  const serverName =
-    session.serverInfo?.title ?? session.serverInfo?.name ?? "MCP server";
+  const serverName = sessionName(session);
 
   if (view === "snapshots") {
     return (
@@ -338,9 +401,10 @@ export default function App() {
   if (view === "chat") {
     return (
       <ChatScreen
-        sessionId={session.sessionId}
-        tools={tools}
-        serverName={serverName}
+        sessions={sessions.map((s) => ({
+          sessionId: s.sessionId,
+          serverName: sessionName(s),
+        }))}
         onClose={() => setView("workspace")}
         onHostEvent={addLog}
       />
@@ -366,13 +430,37 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="topbar-brand">◈ MCP Studio</div>
-        <div className="topbar-server">
-          <span className="status-dot" />
-          {serverName}
-          {session.serverInfo?.version && (
-            <span className="field-type">v{session.serverInfo.version}</span>
-          )}
-          {latency !== null && <span className="field-type">{latency} ms</span>}
+        <div className="topbar-servers">
+          {sessions.map((s) => {
+            const isFocused = s.sessionId === session.sessionId;
+            const latency = latencyMap[s.sessionId];
+            return (
+              <button
+                key={s.sessionId}
+                className={`server-chip ${isFocused ? "active" : ""}`}
+                title={
+                  isFocused ? "Focused server" : "Click to focus this server's workspace"
+                }
+                onClick={() => focusSession(s.sessionId)}
+              >
+                <span
+                  className="status-dot"
+                  style={latency === null ? { background: "var(--error)", boxShadow: "none" } : undefined}
+                />
+                {sessionName(s)}
+                {typeof latency === "number" && (
+                  <span className="field-type">{latency} ms</span>
+                )}
+              </button>
+            );
+          })}
+          <button
+            className="server-chip add"
+            title="Connect another MCP server"
+            onClick={() => setView("addserver")}
+          >
+            ＋
+          </button>
         </div>
         <div className="topbar-actions">
           <button className="btn btn-ghost btn-sm" onClick={() => setView("chat")}>
@@ -389,7 +477,7 @@ export default function App() {
             className="btn btn-ghost btn-sm"
             onClick={() => refresh(session.sessionId)}
           >
-            ⟳ Refresh
+            ⟳
           </button>
           <button
             className={`btn btn-ghost btn-sm ${logOpen ? "active" : ""}`}
@@ -404,7 +492,15 @@ export default function App() {
             History{" "}
             {history.length > 0 && <span className="log-count">{history.length}</span>}
           </button>
-          <button className="btn btn-ghost btn-sm" onClick={disconnect}>
+          <button
+            className="btn btn-ghost btn-sm"
+            title={
+              sessions.length > 1
+                ? `Disconnect ${serverName} (other servers stay connected)`
+                : "Disconnect"
+            }
+            onClick={() => disconnect()}
+          >
             Disconnect
           </button>
         </div>
@@ -438,7 +534,7 @@ export default function App() {
             />
             <InfoTip
               pos="right"
-              text="Everything the connected server exposes. Tools = actions you can call with arguments (✦ marks tools that render a UI widget). Resources = read-only data addressed by URI, including parameterized templates. Prompts = reusable message templates."
+              text="Everything the focused server exposes. Tools = actions you can call with arguments (✦ marks tools that render a UI widget). Resources = read-only data addressed by URI, including parameterized templates. Prompts = reusable message templates. With multiple servers connected, switch focus via the chips in the top bar — Chat always sees all servers."
             />
           </div>
           <div className="sidebar-list">
@@ -564,14 +660,14 @@ export default function App() {
                 Event log
                 <InfoTip
                   pos="bottom-left"
-                  text="Live activity: notifications pushed by the server (log messages, list-changed events) and actions taken by widgets (tool calls, follow-up messages, links)."
+                  text="Live activity across all connected servers: notifications (log messages, list-changed events) and actions taken by widgets. With multiple servers, entries are prefixed with the server name."
                 />
               </span>
               <span className="history-actions">
                 {session.capabilities?.logging !== undefined && (
                   <select
                     className="input input-sm"
-                    title="Ask the server to send log messages at this level and above"
+                    title="Ask the focused server to send log messages at this level and above"
                     value={logLevel}
                     onChange={async (e) => {
                       const level = e.target.value;
@@ -615,11 +711,11 @@ export default function App() {
           sessionId={session.sessionId}
           serverInfo={session.serverInfo}
           entries={history}
-          frames={frames}
+          frames={framesBySession[session.sessionId] ?? []}
           onUse={handleHistoryUse}
           onClear={() => {
             setHistory([]);
-            setFrames([]);
+            setFramesBySession((prev) => ({ ...prev, [session.sessionId]: [] }));
           }}
           onClose={() => setHistoryOpen(false)}
         />

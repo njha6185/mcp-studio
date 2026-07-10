@@ -7,8 +7,11 @@ import type { ImportedServer, SavedServer } from "../api";
 
 interface Props {
   onConnect: (params: ConnectParams) => Promise<void>;
+  onConnectMany?: (params: ConnectParams[]) => Promise<void>;
   status?: string | null;
   onOpenSettings?: () => void;
+  /** Present when adding a server to an existing workspace. */
+  onBack?: () => void;
 }
 
 const RECENT_KEY = "mcp-studio-recent";
@@ -33,7 +36,13 @@ function describeParams(p: ConnectParams): string {
   return p.type === "stdio" ? `${p.command} ${(p.args ?? []).join(" ")}` : p.url ?? "";
 }
 
-export default function ConnectScreen({ onConnect, status, onOpenSettings }: Props) {
+export default function ConnectScreen({
+  onConnect,
+  onConnectMany,
+  status,
+  onOpenSettings,
+  onBack,
+}: Props) {
   const [type, setType] = useState<TransportType>("streamable-http");
   const [url, setUrl] = useState("http://localhost:8000/mcp");
   const [command, setCommand] = useState("");
@@ -46,6 +55,7 @@ export default function ConnectScreen({ onConnect, status, onOpenSettings }: Pro
   const [importText, setImportText] = useState("");
   const [importFound, setImportFound] = useState<{ source: string; server: ImportedServer }[]>([]);
   const [importMsg, setImportMsg] = useState<string | null>(null);
+  const [checked, setChecked] = useState<Set<string>>(new Set());
   const recent = loadRecent();
 
   const refreshSaved = () =>
@@ -82,6 +92,31 @@ export default function ConnectScreen({ onConnect, status, onOpenSettings }: Pro
     } finally {
       setBusy(false);
     }
+  }
+
+  async function submitChecked() {
+    const list = saved.filter((s) => checked.has(s.id)).map((s) => s.params);
+    if (list.length === 0) return;
+    setError(null);
+    setBusy(true);
+    try {
+      if (onConnectMany) await onConnectMany(list);
+      else for (const p of list) await onConnect(p);
+      setChecked(new Set());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleChecked(id: string) {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   async function saveCurrent() {
@@ -123,6 +158,11 @@ export default function ConnectScreen({ onConnect, status, onOpenSettings }: Pro
   return (
     <div className="connect-screen">
       <div className="connect-theme-toggle">
+        {onBack && (
+          <button className="btn btn-ghost btn-sm" onClick={onBack}>
+            ← Back to workspace
+          </button>
+        )}
         {onOpenSettings && (
           <button className="btn btn-ghost btn-sm" onClick={onOpenSettings}>
             ⚙ Settings
@@ -289,6 +329,12 @@ export default function ConnectScreen({ onConnect, status, onOpenSettings }: Pro
           )}
           {saved.map((s) => (
             <div key={s.id} className="recent-item saved-item">
+              <input
+                type="checkbox"
+                title="Select to connect multiple servers at once"
+                checked={checked.has(s.id)}
+                onChange={() => toggleChecked(s.id)}
+              />
               <button
                 className="saved-connect"
                 disabled={busy}
@@ -307,6 +353,11 @@ export default function ConnectScreen({ onConnect, status, onOpenSettings }: Pro
               </button>
             </div>
           ))}
+          {checked.size > 0 && (
+            <button className="btn btn-primary btn-sm" disabled={busy} onClick={submitChecked}>
+              {busy ? "Connecting…" : `Connect ${checked.size} selected — Chat can use them all together`}
+            </button>
+          )}
 
           {recent.length > 0 && (
             <>

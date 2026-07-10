@@ -486,14 +486,21 @@ export interface ChatResponse {
   model?: string;
 }
 
+export interface AnthropicToolDef {
+  name: string;
+  description: string;
+  input_schema: unknown;
+}
+
 export function chat(
   sessionId: string,
   messages: AnthropicMessage[],
-  model?: string
+  model?: string,
+  tools?: AnthropicToolDef[]
 ): Promise<ChatResponse> {
   return request(`/api/${sessionId}/chat`, {
     method: "POST",
-    body: JSON.stringify({ messages, model }),
+    body: JSON.stringify({ messages, model, ...(tools ? { tools } : {}) }),
   });
 }
 

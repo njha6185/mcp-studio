@@ -715,14 +715,21 @@ app.post("/api/:sessionId/chat", async (req, res) => {
   const { messages, system } = req.body ?? {};
   const model = req.body?.model || store.settings.chatModel || "claude-sonnet-5";
   try {
-    const toolsResult = hasCapability(session, "tools")
-      ? await session.client.listTools()
-      : { tools: [] };
-    const tools = (toolsResult.tools ?? []).map((t) => ({
-      name: t.name,
-      description: t.description ?? "",
-      input_schema: t.inputSchema ?? { type: "object" },
-    }));
+    // Multi-server chats send a pre-aggregated (namespaced) tool list;
+    // otherwise fall back to this session's tools.
+    let tools: { name: string; description: string; input_schema: unknown }[];
+    if (Array.isArray(req.body?.tools)) {
+      tools = req.body.tools;
+    } else {
+      const toolsResult = hasCapability(session, "tools")
+        ? await session.client.listTools()
+        : { tools: [] };
+      tools = (toolsResult.tools ?? []).map((t) => ({
+        name: t.name,
+        description: t.description ?? "",
+        input_schema: t.inputSchema ?? { type: "object" },
+      }));
+    }
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
