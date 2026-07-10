@@ -33,13 +33,24 @@ export interface Snapshot {
   updatedAt: number;
 }
 
+export interface LlmProvider {
+  id: string;
+  name: string;
+  kind: "anthropic" | "openai";
+  baseUrl: string;
+  apiKey?: string;
+}
+
 export interface StoreData {
   savedServers: SavedServer[];
   oauth: Record<string, OAuthEntry>;
   snapshots: Snapshot[];
   settings: {
+    /** @deprecated migrated into providers[] on boot */
     anthropicApiKey?: string;
     chatModel?: string;
+    providers?: LlmProvider[];
+    activeProviderId?: string;
   };
 }
 

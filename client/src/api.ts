@@ -431,10 +431,20 @@ export function forgetOAuth(url?: string): Promise<void> {
   });
 }
 
+export interface LlmProviderView {
+  id: string;
+  name: string;
+  kind: "anthropic" | "openai";
+  baseUrl: string;
+  hasKey: boolean;
+  keyPreview: string | null;
+}
+
 export interface StudioSettings {
-  hasApiKey: boolean;
-  apiKeyPreview: string | null;
-  chatModel: string;
+  providers: LlmProviderView[];
+  activeProviderId: string | null;
+  chatModel: string | null;
+  activeProvider: { name: string; kind: string; model: string | null } | null;
   storePath: string;
 }
 
@@ -442,13 +452,33 @@ export function getSettings(): Promise<StudioSettings> {
   return request("/api/store/settings");
 }
 
-export function saveSettings(patch: {
-  anthropicApiKey?: string;
-  chatModel?: string;
-}): Promise<void> {
-  return request("/api/store/settings", {
+export function saveProvider(provider: {
+  id?: string;
+  name?: string;
+  kind: "anthropic" | "openai";
+  baseUrl: string;
+  apiKey?: string;
+}): Promise<{ providers: LlmProviderView[] }> {
+  return request("/api/llm/providers", {
     method: "POST",
-    body: JSON.stringify(patch),
+    body: JSON.stringify(provider),
+  });
+}
+
+export function deleteProvider(id: string): Promise<{ providers: LlmProviderView[] }> {
+  return request(`/api/llm/providers/${id}`, { method: "DELETE" });
+}
+
+export function listProviderModels(
+  id: string
+): Promise<{ models: { id: string; name?: string }[] }> {
+  return request(`/api/llm/providers/${id}/models`);
+}
+
+export function setActiveLlm(providerId?: string, model?: string): Promise<void> {
+  return request("/api/llm/active", {
+    method: "POST",
+    body: JSON.stringify({ providerId, model }),
   });
 }
 

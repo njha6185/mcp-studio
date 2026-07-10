@@ -88,12 +88,19 @@ export default function ChatScreen({ sessions, onClose, onHostEvent }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [usage, setUsage] = useState({ input: 0, output: 0 });
-  const [hasKey, setHasKey] = useState<boolean | null>(null);
+  const [llm, setLlm] = useState<{ name: string; model: string | null } | null | undefined>(
+    undefined
+  );
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    api.getSettings().then((s) => setHasKey(s.hasApiKey));
+    api
+      .getSettings()
+      .then((s) =>
+        setLlm(s.activeProvider ? { name: s.activeProvider.name, model: s.activeProvider.model } : null)
+      );
   }, []);
+  const llmReady = Boolean(llm && llm.model);
 
   // Aggregate tools from every connected server.
   useEffect(() => {
@@ -275,6 +282,7 @@ export default function ChatScreen({ sessions, onClose, onHostEvent }: Props) {
           <InfoTip text="A real Claude model acts as the host: it sees the tools of every connected server (namespaced per server), decides which to call, and results render as widgets inline — like previewing your apps inside ChatGPT, but local." />
           <span className="field-type" style={{ marginLeft: 8 }}>
             {serverSummary} · {routedTools.length} tools
+            {llmReady && ` · ${llm!.name} / ${llm!.model}`}
           </span>
         </h2>
         <span className="screen-header-actions">
@@ -299,13 +307,14 @@ export default function ChatScreen({ sessions, onClose, onHostEvent }: Props) {
       </div>
 
       <div className="screen-body chat-body">
-        {hasKey === false && (
+        {llm !== undefined && !llmReady && (
           <div className="connect-error">
-            No Anthropic API key configured — add one in Settings to use the chat
-            simulator.
+            {llm === null
+              ? "No LLM provider configured — add one in Settings to use the chat simulator."
+              : "No model selected for the active provider — pick one in Settings."}
           </div>
         )}
-        {messages.length === 0 && hasKey && (
+        {messages.length === 0 && llmReady && (
           <div className="empty-state">
             <div className="empty-state-icon">💬</div>
             <p>
@@ -337,7 +346,7 @@ export default function ChatScreen({ sessions, onClose, onHostEvent }: Props) {
           rows={2}
           placeholder="Message the simulated assistant…"
           value={input}
-          disabled={busy || hasKey === false}
+          disabled={busy || (llm !== undefined && !llmReady)}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -348,7 +357,7 @@ export default function ChatScreen({ sessions, onClose, onHostEvent }: Props) {
         />
         <button
           className="btn btn-primary"
-          disabled={busy || !input.trim() || hasKey === false}
+          disabled={busy || !input.trim() || (llm !== undefined && !llmReady)}
           onClick={send}
         >
           {busy ? "…" : "Send"}

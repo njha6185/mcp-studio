@@ -16,8 +16,31 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import fs from "node:fs";
-import { store, persist, clearSection, STORE_PATH, type Snapshot } from "./store.js";
+import {
+  store,
+  persist,
+  clearSection,
+  STORE_PATH,
+  type Snapshot,
+  type LlmProvider,
+} from "./store.js";
 import { detectConfigs, parseConfigJson } from "./configs.js";
+import { chatComplete, listModels } from "./llm.js";
+
+// Migrate the legacy single-Anthropic-key setting into the provider registry.
+if (store.settings.anthropicApiKey && !(store.settings.providers ?? []).length) {
+  const provider: LlmProvider = {
+    id: randomUUID(),
+    name: "Anthropic",
+    kind: "anthropic",
+    baseUrl: "https://api.anthropic.com/v1",
+    apiKey: store.settings.anthropicApiKey,
+  };
+  store.settings.providers = [provider];
+  store.settings.activeProviderId = provider.id;
+  delete store.settings.anthropicApiKey;
+  persist();
+}
 import {
   CreateMessageRequestSchema,
   ElicitRequestSchema,
@@ -673,22 +696,92 @@ app.delete("/api/store/oauth", (req, res) => {
   res.json({ ok: true });
 });
 
+function activeProvider(): LlmProvider | null {
+  return (
+    (store.settings.providers ?? []).find(
+      (p) => p.id === store.settings.activeProviderId
+    ) ??
+    (store.settings.providers ?? [])[0] ??
+    null
+  );
+}
+
+function redactProvider(p: LlmProvider) {
+  return {
+    id: p.id,
+    name: p.name,
+    kind: p.kind,
+    baseUrl: p.baseUrl,
+    hasKey: Boolean(p.apiKey),
+    keyPreview: p.apiKey ? `${p.apiKey.slice(0, 8)}…` : null,
+  };
+}
+
 app.get("/api/store/settings", (_req, res) => {
+  const active = activeProvider();
   res.json({
-    hasApiKey: Boolean(store.settings.anthropicApiKey),
-    apiKeyPreview: store.settings.anthropicApiKey
-      ? `${store.settings.anthropicApiKey.slice(0, 10)}…`
+    providers: (store.settings.providers ?? []).map(redactProvider),
+    activeProviderId: active?.id ?? null,
+    chatModel: store.settings.chatModel ?? null,
+    activeProvider: active
+      ? { name: active.name, kind: active.kind, model: store.settings.chatModel ?? null }
       : null,
-    chatModel: store.settings.chatModel ?? "claude-sonnet-5",
     storePath: STORE_PATH,
   });
 });
 
-app.post("/api/store/settings", (req, res) => {
-  const { anthropicApiKey, chatModel } = req.body ?? {};
-  if (anthropicApiKey !== undefined)
-    store.settings.anthropicApiKey = anthropicApiKey || undefined;
-  if (chatModel !== undefined) store.settings.chatModel = chatModel || undefined;
+app.post("/api/llm/providers", (req, res) => {
+  const { id, name, kind, baseUrl, apiKey } = req.body ?? {};
+  if (kind !== "anthropic" && kind !== "openai")
+    return void res.status(400).json({ error: "kind must be anthropic or openai" });
+  if (!baseUrl) return void res.status(400).json({ error: "baseUrl required" });
+  const providers = (store.settings.providers ??= []);
+  const existing = id ? providers.find((p) => p.id === id) : undefined;
+  if (existing) {
+    existing.name = name || existing.name;
+    existing.baseUrl = baseUrl;
+    if (apiKey !== undefined && apiKey !== "") existing.apiKey = apiKey;
+  } else {
+    const provider: LlmProvider = {
+      id: randomUUID(),
+      name: name || new URL(baseUrl).hostname,
+      kind,
+      baseUrl,
+      apiKey: apiKey || undefined,
+    };
+    providers.push(provider);
+    if (!store.settings.activeProviderId) store.settings.activeProviderId = provider.id;
+  }
+  persist();
+  res.json({ providers: providers.map(redactProvider) });
+});
+
+app.delete("/api/llm/providers/:id", (req, res) => {
+  store.settings.providers = (store.settings.providers ?? []).filter(
+    (p) => p.id !== req.params.id
+  );
+  if (store.settings.activeProviderId === req.params.id)
+    store.settings.activeProviderId = store.settings.providers[0]?.id;
+  persist();
+  res.json({ providers: store.settings.providers.map(redactProvider) });
+});
+
+app.get("/api/llm/providers/:id/models", async (req, res) => {
+  const provider = (store.settings.providers ?? []).find(
+    (p) => p.id === req.params.id
+  );
+  if (!provider) return void res.status(404).json({ error: "Unknown provider" });
+  try {
+    res.json({ models: await listModels(provider) });
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post("/api/llm/active", (req, res) => {
+  const { providerId, model } = req.body ?? {};
+  if (providerId) store.settings.activeProviderId = providerId;
+  if (model !== undefined) store.settings.chatModel = model || undefined;
   persist();
   res.json({ ok: true });
 });
@@ -707,13 +800,17 @@ app.delete("/api/store", (req, res) => {
 app.post("/api/:sessionId/chat", async (req, res) => {
   const session = getSession(req, res);
   if (!session) return;
-  const apiKey = store.settings.anthropicApiKey;
-  if (!apiKey)
+  const provider = activeProvider();
+  if (!provider)
     return void res
       .status(400)
-      .json({ error: "No Anthropic API key set — add one in Settings" });
+      .json({ error: "No LLM provider configured — add one in Settings" });
+  const model = req.body?.model || store.settings.chatModel;
+  if (!model)
+    return void res
+      .status(400)
+      .json({ error: "No model selected — pick one in Settings" });
   const { messages, system } = req.body ?? {};
-  const model = req.body?.model || store.settings.chatModel || "claude-sonnet-5";
   try {
     // Multi-server chats send a pre-aggregated (namespaced) tool list;
     // otherwise fall back to this session's tools.
@@ -730,33 +827,17 @@ app.post("/api/:sessionId/chat", async (req, res) => {
         input_schema: t.inputSchema ?? { type: "object" },
       }));
     }
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 4096,
-        system:
-          system ??
-          "You are simulating an AI assistant host (like ChatGPT or Claude) connected to an MCP server. Use the available tools when they help answer the user. Keep replies concise.",
-        messages,
-        ...(tools.length ? { tools } : {}),
-      }),
-    });
-    const body = await response.json();
-    if (!response.ok) {
-      const message =
-        (body as { error?: { message?: string } }).error?.message ??
-        `${response.status} ${response.statusText}`;
-      return void res.status(502).json({ error: message });
-    }
-    res.json(body);
+    const response = await chatComplete(
+      provider,
+      model,
+      system ??
+        "You are simulating an AI assistant host (like ChatGPT or Claude) connected to MCP servers. Use the available tools when they help answer the user. Keep replies concise.",
+      messages,
+      tools
+    );
+    res.json(response);
   } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
