@@ -83,13 +83,38 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export function connect(params: ConnectParams): Promise<SessionInfo> {
+export interface AuthRequired {
+  authRequired: true;
+  pendingId: string;
+  authorizationUrl: string;
+}
+
+export function connect(params: ConnectParams): Promise<SessionInfo | AuthRequired> {
   return tracked("initialize", params, () =>
     request("/api/connect", {
       method: "POST",
       body: JSON.stringify(params),
     })
   );
+}
+
+/** Poll until the user completes the OAuth flow in the other tab. */
+export async function waitForOAuth(
+  pendingId: string,
+  timeoutMs = 5 * 60 * 1000
+): Promise<SessionInfo> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await request<{
+      status: "waiting" | "ready" | "error";
+      session?: SessionInfo;
+      error?: string;
+    }>(`/api/oauth/pending/${pendingId}`);
+    if (res.status === "ready" && res.session) return res.session;
+    if (res.status === "error") throw new Error(res.error ?? "Authorization failed");
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  throw new Error("Timed out waiting for authorization");
 }
 
 export function disconnect(sessionId: string): Promise<void> {

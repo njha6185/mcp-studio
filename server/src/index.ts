@@ -7,6 +7,15 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
+  UnauthorizedError,
+  type OAuthClientProvider,
+} from "@modelcontextprotocol/sdk/client/auth.js";
+import type {
+  OAuthClientInformationMixed,
+  OAuthClientMetadata,
+  OAuthTokens,
+} from "@modelcontextprotocol/sdk/shared/auth.js";
+import {
   CreateMessageRequestSchema,
   ElicitRequestSchema,
   type LoggingLevel,
@@ -36,6 +45,111 @@ interface Session {
 }
 
 const sessions = new Map<string, Session>();
+
+// ---------------------------------------------------------------------------
+// OAuth support for remote servers
+// ---------------------------------------------------------------------------
+
+interface OAuthRecord {
+  clientInformation?: OAuthClientInformationMixed;
+  tokens?: OAuthTokens;
+  codeVerifier?: string;
+}
+
+/** Credentials keyed by server URL so reconnects reuse tokens without a new flow. */
+const oauthStore = new Map<string, OAuthRecord>();
+
+interface PendingAuth {
+  params: ConnectRequest;
+  provider: StudioOAuthProvider;
+  transport: {
+    finishAuth(code: string): Promise<void>;
+  };
+  status: "waiting" | "ready" | "error";
+  session?: { sessionId: string; serverInfo: unknown; capabilities: unknown };
+  error?: string;
+  createdAt: number;
+}
+
+const pendingAuths = new Map<string, PendingAuth>();
+
+class StudioOAuthProvider implements OAuthClientProvider {
+  /** Captured instead of redirecting — the browser opens it in a new tab. */
+  authorizationUrl: string | null = null;
+
+  constructor(
+    private serverUrl: string,
+    private stateId: string
+  ) {}
+
+  get redirectUrl(): string {
+    return `http://localhost:${PORT}/api/oauth/callback`;
+  }
+
+  get clientMetadata(): OAuthClientMetadata {
+    return {
+      client_name: "MCP Studio",
+      redirect_uris: [this.redirectUrl],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+    };
+  }
+
+  state(): string {
+    return this.stateId;
+  }
+
+  private record(): OAuthRecord {
+    let rec = oauthStore.get(this.serverUrl);
+    if (!rec) {
+      rec = {};
+      oauthStore.set(this.serverUrl, rec);
+    }
+    return rec;
+  }
+
+  clientInformation() {
+    return oauthStore.get(this.serverUrl)?.clientInformation;
+  }
+  saveClientInformation(info: OAuthClientInformationMixed) {
+    this.record().clientInformation = info;
+  }
+  tokens() {
+    return oauthStore.get(this.serverUrl)?.tokens;
+  }
+  saveTokens(tokens: OAuthTokens) {
+    this.record().tokens = tokens;
+  }
+  saveCodeVerifier(verifier: string) {
+    this.record().codeVerifier = verifier;
+  }
+  codeVerifier(): string {
+    const v = oauthStore.get(this.serverUrl)?.codeVerifier;
+    if (!v) throw new Error("No PKCE code verifier saved for this server");
+    return v;
+  }
+  redirectToAuthorization(url: URL) {
+    this.authorizationUrl = url.toString();
+  }
+  invalidateCredentials?(scope: "all" | "client" | "tokens" | "verifier") {
+    const rec = oauthStore.get(this.serverUrl);
+    if (!rec) return;
+    if (scope === "all") oauthStore.delete(this.serverUrl);
+    if (scope === "client") delete rec.clientInformation;
+    if (scope === "tokens") delete rec.tokens;
+    if (scope === "verifier") delete rec.codeVerifier;
+  }
+}
+
+interface ConnectRequest {
+  type?: string;
+  url?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+}
 
 const app = express();
 app.use(cors());
@@ -92,77 +206,162 @@ function askBrowser(session: Session, method: string, params: unknown): Promise<
   });
 }
 
-app.post("/api/connect", async (req, res) => {
-  const { type, url, command, args, env, headers } = req.body ?? {};
-  try {
-    let transport: Transport;
-    if (type === "stdio") {
-      if (!command) throw new Error("command is required for stdio");
-      transport = new StdioClientTransport({
-        command,
-        args: Array.isArray(args) ? args : [],
-        env: { ...(process.env as Record<string, string>), ...(env ?? {}) },
-        stderr: "pipe",
-      });
-    } else if (type === "sse") {
-      if (!url) throw new Error("url is required for sse");
-      transport = new SSEClientTransport(new URL(url), {
-        requestInit: { headers: headers ?? {} },
-      });
-    } else {
-      if (!url) throw new Error("url is required for streamable-http");
-      transport = new StreamableHTTPClientTransport(new URL(url), {
-        requestInit: { headers: headers ?? {} },
-      });
-    }
-
-    const client = new Client(
-      { name: "mcp-studio", version: "0.1.0" },
-      { capabilities: { sampling: {}, elicitation: {} } }
-    );
-
-    const id = randomUUID();
-    const session: Session = {
-      id,
-      client,
-      serverInfo: null,
-      capabilities: null,
-      subscribers: new Set(),
-      frames: [],
-      frameSeq: 0,
-      pending: new Map(),
-    };
-
-    client.fallbackNotificationHandler = async (notification) => {
-      broadcast(session, "notification", notification);
-    };
-    client.setRequestHandler(CreateMessageRequestSchema, (request) =>
-      askBrowser(session, "sampling/createMessage", request.params) as never
-    );
-    client.setRequestHandler(ElicitRequestSchema, (request) =>
-      askBrowser(session, "elicitation/create", request.params) as never
-    );
-
-    tapTransport(transport, session);
-    await client.connect(transport);
-    session.serverInfo = client.getServerVersion();
-    session.capabilities = client.getServerCapabilities();
-
-    transport.onclose = () => {
-      broadcast(session, "closed", {});
-      for (const sub of session.subscribers) sub.end();
-      sessions.delete(id);
-    };
-
-    sessions.set(id, session);
-    res.json({
-      sessionId: id,
-      serverInfo: session.serverInfo,
-      capabilities: session.capabilities,
+function buildTransport(
+  params: ConnectRequest,
+  authProvider?: OAuthClientProvider
+): Transport {
+  const { type, url, command, args, env, headers } = params;
+  if (type === "stdio") {
+    if (!command) throw new Error("command is required for stdio");
+    return new StdioClientTransport({
+      command,
+      args: Array.isArray(args) ? args : [],
+      env: { ...(process.env as Record<string, string>), ...(env ?? {}) },
+      stderr: "pipe",
     });
+  }
+  if (!url) throw new Error(`url is required for ${type}`);
+  if (type === "sse") {
+    return new SSEClientTransport(new URL(url), {
+      requestInit: { headers: headers ?? {} },
+      authProvider,
+    });
+  }
+  return new StreamableHTTPClientTransport(new URL(url), {
+    requestInit: { headers: headers ?? {} },
+    authProvider,
+  });
+}
+
+async function establishSession(
+  params: ConnectRequest,
+  authProvider?: OAuthClientProvider
+): Promise<{ sessionId: string; serverInfo: unknown; capabilities: unknown }> {
+  const transport = buildTransport(params, authProvider);
+  const client = new Client(
+    { name: "mcp-studio", version: "0.1.0" },
+    { capabilities: { sampling: {}, elicitation: {} } }
+  );
+
+  const id = randomUUID();
+  const session: Session = {
+    id,
+    client,
+    serverInfo: null,
+    capabilities: null,
+    subscribers: new Set(),
+    frames: [],
+    frameSeq: 0,
+    pending: new Map(),
+  };
+
+  client.fallbackNotificationHandler = async (notification) => {
+    broadcast(session, "notification", notification);
+  };
+  client.setRequestHandler(CreateMessageRequestSchema, (request) =>
+    askBrowser(session, "sampling/createMessage", request.params) as never
+  );
+  client.setRequestHandler(ElicitRequestSchema, (request) =>
+    askBrowser(session, "elicitation/create", request.params) as never
+  );
+
+  tapTransport(transport, session);
+  await client.connect(transport);
+  session.serverInfo = client.getServerVersion();
+  session.capabilities = client.getServerCapabilities();
+
+  transport.onclose = () => {
+    broadcast(session, "closed", {});
+    for (const sub of session.subscribers) sub.end();
+    sessions.delete(id);
+  };
+
+  sessions.set(id, session);
+  return {
+    sessionId: id,
+    serverInfo: session.serverInfo,
+    capabilities: session.capabilities,
+  };
+}
+
+app.post("/api/connect", async (req, res) => {
+  const params = (req.body ?? {}) as ConnectRequest;
+  const isRemote = params.type === "sse" || params.type === "streamable-http";
+  const stateId = randomUUID();
+  const provider =
+    isRemote && params.url ? new StudioOAuthProvider(params.url, stateId) : undefined;
+  try {
+    res.json(await establishSession(params, provider));
   } catch (err) {
+    // Server requires OAuth: hand the authorization URL to the browser and
+    // keep the transport around to complete the code exchange on callback.
+    if (err instanceof UnauthorizedError && provider?.authorizationUrl) {
+      const transport = buildTransport(params, provider) as unknown as PendingAuth["transport"];
+      pendingAuths.set(stateId, {
+        params,
+        provider,
+        transport,
+        status: "waiting",
+        createdAt: Date.now(),
+      });
+      res.json({
+        authRequired: true,
+        pendingId: stateId,
+        authorizationUrl: provider.authorizationUrl,
+      });
+      return;
+    }
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
+});
+
+app.get("/api/oauth/callback", async (req, res) => {
+  const code = String(req.query.code ?? "");
+  const state = String(req.query.state ?? "");
+  const pending = pendingAuths.get(state);
+  const page = (title: string, body: string, ok: boolean) =>
+    res
+      .status(ok ? 200 : 400)
+      .type("html")
+      .send(
+        `<!doctype html><body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:90vh"><div style="text-align:center"><h2>${title}</h2><p>${body}</p></div></body>`
+      );
+  if (!pending) return page("Unknown authorization request", "Restart the connection from MCP Studio.", false);
+  if (req.query.error) {
+    const reason = String(req.query.error_description ?? req.query.error);
+    finishPending(pending, reason);
+    return page("Authorization failed", reason, false);
+  }
+  try {
+    await pending.transport.finishAuth(code);
+    // Tokens are now stored — connect fresh with the same provider.
+    pending.session = await establishSession(pending.params, pending.provider);
+    pending.status = "ready";
+    page("✓ Authorized", "You can close this tab and return to MCP Studio.", true);
+  } catch (err) {
+    finishPending(pending, err instanceof Error ? err.message : String(err));
+    page("Authorization failed", pending.error ?? "unknown error", false);
+  }
+});
+
+function finishPending(pending: PendingAuth, error: string) {
+  pending.status = "error";
+  pending.error = error;
+  return undefined;
+}
+
+app.get("/api/oauth/pending/:id", (req, res) => {
+  const pending = pendingAuths.get(req.params.id);
+  if (!pending) return void res.status(404).json({ error: "Unknown pending auth" });
+  if (pending.status === "ready") {
+    pendingAuths.delete(req.params.id);
+    return void res.json({ status: "ready", session: pending.session });
+  }
+  if (pending.status === "error") {
+    pendingAuths.delete(req.params.id);
+    return void res.json({ status: "error", error: pending.error });
+  }
+  res.json({ status: "waiting" });
 });
 
 function getSession(req: express.Request, res: express.Response): Session | null {

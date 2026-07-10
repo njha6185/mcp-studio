@@ -60,6 +60,7 @@ export default function App() {
   const [resourceUpdate, setResourceUpdate] = useState<{ uri: string; ts: number } | null>(null);
   const [prefill, setPrefill] = useState<ToolPrefill | null>(null);
   const [logLevel, setLogLevel] = useState("");
+  const [connectStatus, setConnectStatus] = useState<string | null>(null);
 
   useEffect(() => {
     return api.subscribeHistory((entry) => {
@@ -105,7 +106,20 @@ export default function App() {
 
   async function connect(params: ConnectParams) {
     setHistory([]);
-    const info = await api.connect(params);
+    let info;
+    try {
+      info = await api.connect(params);
+      if ("authRequired" in info) {
+        // Server requires OAuth: user authorizes in a new tab, we wait here.
+        window.open(info.authorizationUrl, "_blank", "noopener");
+        setConnectStatus(
+          "Waiting for authorization — complete the sign-in in the tab that just opened…"
+        );
+        info = await api.waitForOAuth(info.pendingId);
+      }
+    } finally {
+      setConnectStatus(null);
+    }
     saveRecent(params);
     setSession(info);
     addLog(
@@ -231,7 +245,7 @@ export default function App() {
   );
 
   if (!session) {
-    return <ConnectScreen onConnect={connect} />;
+    return <ConnectScreen onConnect={connect} status={connectStatus} />;
   }
 
   const selectedTool =

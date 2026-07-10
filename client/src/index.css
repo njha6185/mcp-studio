@@ -327,6 +327,16 @@ button { font-family: inherit; }
   word-break: break-word;
 }
 
+.connect-status {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  text-align: center;
+}
+
 .recent { margin-top: 22px; }
 .recent-title {
   font-size: 11px;

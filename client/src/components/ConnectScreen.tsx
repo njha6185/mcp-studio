@@ -5,6 +5,7 @@ import InfoTip from "./InfoTip";
 
 interface Props {
   onConnect: (params: ConnectParams) => Promise<void>;
+  status?: string | null;
 }
 
 const RECENT_KEY = "mcp-studio-recent";
@@ -25,7 +26,7 @@ export function saveRecent(params: ConnectParams) {
   localStorage.setItem(RECENT_KEY, JSON.stringify(recent.slice(0, 6)));
 }
 
-export default function ConnectScreen({ onConnect }: Props) {
+export default function ConnectScreen({ onConnect, status }: Props) {
   const [type, setType] = useState<TransportType>("streamable-http");
   const [url, setUrl] = useState("http://localhost:8000/mcp");
   const [command, setCommand] = useState("");
@@ -161,6 +162,7 @@ export default function ConnectScreen({ onConnect }: Props) {
         <button className="btn btn-primary btn-lg" disabled={busy} onClick={() => submit()}>
           {busy ? "Connecting…" : "Connect"}
         </button>
+        {status && <div className="connect-status">{status}</div>}
 
         {recent.length > 0 && (
           <div className="recent">

@@ -35,7 +35,7 @@ and **MCP-UI** (`ui://` embedded resources).
 
 | Area | What you get |
 |---|---|
-| **Connect** | Streamable HTTP, SSE, and STDIO transports; custom HTTP headers (e.g. `Authorization`); recent connections remembered |
+| **Connect** | Streamable HTTP, SSE, and STDIO transports; custom HTTP headers (e.g. `Authorization`); **OAuth** for protected remote servers (discovery, dynamic client registration, PKCE — authorize in a browser tab, tokens cached per server URL for reconnects); recent connections remembered |
 | **Tools** | List with search; title/description; annotation chips (read-only / destructive / idempotent / open-world with ✓ / ✕ / undeclared states); input schema as a generated form *or* raw JSON; tool `_meta` viewer; optional request `_meta` key-value pairs sent with `tools/call` |
 | **Widgets** | Tools with UI metadata get a ✦ badge and a **Widget** result tab rendering the live UI; widget-initiated `callTool` round-trips through the real session; fullscreen mode; auto-height |
 | **Results** | Widget / Content / Raw tabs; text, images, audio, embedded resources, resource links, `structuredContent`; per-call duration and error display |
@@ -236,6 +236,20 @@ All endpoints are JSON over HTTP on the proxy (default `:3400`).
 | `/api/:session/resources/unsubscribe` | POST | `{uri}` |
 | `/api/:session/logging/level` | POST | `{level}` → `logging/setLevel` |
 | `/api/:session/respond` | POST | `{id, result?, error?}` — answers a server-initiated sampling/elicitation request |
+| `/api/oauth/callback` | GET | OAuth redirect target (`code`, `state`) — completes the token exchange and connects |
+| `/api/oauth/pending/:id` | GET | Poll an in-flight authorization: `{status: waiting\|ready\|error, session?}` |
+
+**OAuth flow:** `POST /api/connect` to a protected server returns
+`{authRequired, pendingId, authorizationUrl}`. The app opens the URL in a new
+tab; after you authorize, the identity provider redirects to
+`/api/oauth/callback`, the proxy exchanges the code (PKCE) and finishes the
+connection, and the app's poll on `/api/oauth/pending/:id` resolves with the
+session. Tokens and client registrations are cached in-memory per server URL,
+so reconnects skip the flow until the proxy restarts.
+
+Try it against the SDK's demo:
+`node node_modules/@modelcontextprotocol/sdk/dist/esm/examples/server/simpleStreamableHttp.js --oauth`
+(MCP on :3000, demo IdP on :3001 — connect to `http://localhost:3000/mcp`).
 
 The `/events` SSE stream carries `notification`, `frame` (raw JSON-RPC frames,
 with the buffered handshake replayed to new subscribers), `progress`,
