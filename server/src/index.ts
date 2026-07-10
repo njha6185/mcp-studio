@@ -23,6 +23,7 @@ import {
   STORE_PATH,
   type Snapshot,
   type LlmProvider,
+  type ChatConversation,
 } from "./store.js";
 import { detectConfigs, parseConfigJson } from "./configs.js";
 import { chatComplete, listModels } from "./llm.js";
@@ -669,6 +670,60 @@ app.put("/api/store/snapshots/:id", (req, res) => {
 
 app.delete("/api/store/snapshots/:id", (req, res) => {
   store.snapshots = store.snapshots.filter((s) => s.id !== req.params.id);
+  persist();
+  res.json({ ok: true });
+});
+
+app.get("/api/store/conversations", (_req, res) => {
+  res.json({
+    conversations: [...store.conversations]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((c) => ({
+        id: c.id,
+        title: c.title,
+        createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
+        messageCount: c.messages.length,
+      })),
+  });
+});
+
+app.get("/api/store/conversations/:id", (req, res) => {
+  const conversation = store.conversations.find((c) => c.id === req.params.id);
+  if (!conversation) return void res.status(404).json({ error: "Unknown conversation" });
+  res.json({ conversation });
+});
+
+app.post("/api/store/conversations", (req, res) => {
+  const { id, title, messages, toolRuns, usage } = req.body ?? {};
+  if (!Array.isArray(messages))
+    return void res.status(400).json({ error: "messages required" });
+  let conversation = id ? store.conversations.find((c) => c.id === id) : undefined;
+  if (conversation) {
+    conversation.title = title || conversation.title;
+    conversation.messages = messages;
+    conversation.toolRuns = toolRuns ?? {};
+    conversation.usage = usage;
+    conversation.updatedAt = Date.now();
+  } else {
+    conversation = {
+      id: randomUUID(),
+      title: title || "Untitled chat",
+      messages,
+      toolRuns: toolRuns ?? {},
+      usage,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } satisfies ChatConversation;
+    store.conversations.push(conversation);
+    if (store.conversations.length > 100) store.conversations.shift();
+  }
+  persist();
+  res.json({ conversation: { id: conversation.id } });
+});
+
+app.delete("/api/store/conversations/:id", (req, res) => {
+  store.conversations = store.conversations.filter((c) => c.id !== req.params.id);
   persist();
   res.json({ ok: true });
 });

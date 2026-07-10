@@ -412,6 +412,49 @@ export function deleteSnapshot(id: string): Promise<void> {
   return request(`/api/store/snapshots/${id}`, { method: "DELETE" });
 }
 
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+}
+
+export interface Conversation {
+  id: string;
+  title: string;
+  messages: AnthropicMessage[];
+  toolRuns: Record<string, unknown>;
+  usage?: { input: number; output: number };
+  createdAt: number;
+  updatedAt: number;
+}
+
+export function listConversations(): Promise<{ conversations: ConversationSummary[] }> {
+  return request("/api/store/conversations");
+}
+
+export function getConversation(id: string): Promise<{ conversation: Conversation }> {
+  return request(`/api/store/conversations/${id}`);
+}
+
+export function saveConversation(conversation: {
+  id?: string;
+  title: string;
+  messages: AnthropicMessage[];
+  toolRuns: Record<string, unknown>;
+  usage?: { input: number; output: number };
+}): Promise<{ conversation: { id: string } }> {
+  return request("/api/store/conversations", {
+    method: "POST",
+    body: JSON.stringify(conversation),
+  });
+}
+
+export function deleteConversation(id: string): Promise<void> {
+  return request(`/api/store/conversations/${id}`, { method: "DELETE" });
+}
+
 export interface OAuthEntryView {
   serverUrl: string;
   registered: boolean;
@@ -483,7 +526,7 @@ export function setActiveLlm(providerId?: string, model?: string): Promise<void>
 }
 
 export function clearStore(
-  section: "savedServers" | "oauth" | "snapshots" | "settings" | "all"
+  section: "savedServers" | "oauth" | "snapshots" | "conversations" | "settings" | "all"
 ): Promise<void> {
   return request(`/api/store?section=${section}`, { method: "DELETE" });
 }

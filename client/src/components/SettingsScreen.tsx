@@ -311,6 +311,9 @@ export default function SettingsScreen({ onClose }: Props) {
             <button className="btn btn-ghost btn-sm" onClick={() => clear("snapshots")}>
               Clear snapshots
             </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => clear("conversations")}>
+              Clear chats
+            </button>
             <button className="btn btn-ghost btn-sm" onClick={() => clear("settings")}>
               Clear providers & settings
             </button>

@@ -41,10 +41,21 @@ export interface LlmProvider {
   apiKey?: string;
 }
 
+export interface ChatConversation {
+  id: string;
+  title: string;
+  messages: unknown[];
+  toolRuns: Record<string, unknown>;
+  usage?: { input: number; output: number };
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface StoreData {
   savedServers: SavedServer[];
   oauth: Record<string, OAuthEntry>;
   snapshots: Snapshot[];
+  conversations: ChatConversation[];
   settings: {
     /** @deprecated migrated into providers[] on boot */
     anthropicApiKey?: string;
@@ -58,6 +69,7 @@ const DEFAULTS: StoreData = {
   savedServers: [],
   oauth: {},
   snapshots: [],
+  conversations: [],
   settings: {},
 };
 
@@ -91,15 +103,19 @@ export function persist() {
   }, 250);
 }
 
-export function clearSection(section: "savedServers" | "oauth" | "snapshots" | "settings" | "all") {
+export function clearSection(
+  section: "savedServers" | "oauth" | "snapshots" | "conversations" | "settings" | "all"
+) {
   if (section === "all") {
     store.savedServers = [];
     store.oauth = {};
     store.snapshots = [];
+    store.conversations = [];
     store.settings = {};
   } else if (section === "savedServers") store.savedServers = [];
   else if (section === "oauth") store.oauth = {};
   else if (section === "snapshots") store.snapshots = [];
+  else if (section === "conversations") store.conversations = [];
   else store.settings = {};
   persist();
 }

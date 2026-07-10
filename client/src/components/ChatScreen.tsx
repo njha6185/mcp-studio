@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { McpTool, ToolCallResult } from "../types";
-import type { AnthropicContentBlock, AnthropicMessage } from "../api";
+import type {
+  AnthropicContentBlock,
+  AnthropicMessage,
+  ConversationSummary,
+} from "../api";
 import ChatToolWidget from "./ChatToolWidget";
 import JsonView from "./JsonView";
 import InfoTip from "./InfoTip";
@@ -91,7 +95,75 @@ export default function ChatScreen({ sessions, onClose, onHostEvent }: Props) {
   const [llm, setLlm] = useState<{ name: string; model: string | null } | null | undefined>(
     undefined
   );
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+  const loadedRef = useRef(false);
+
+  /** Point stored tool runs at the current session for their server, if connected. */
+  const remapRuns = (runs: Record<string, unknown>): Record<string, ToolRun> => {
+    const out: Record<string, ToolRun> = {};
+    for (const [id, raw] of Object.entries(runs)) {
+      const run = raw as ToolRun;
+      const current = sessions.find((s) => s.serverName === run.serverName);
+      out[id] = { ...run, sessionId: current?.sessionId ?? run.sessionId };
+    }
+    return out;
+  };
+
+  async function loadConversation(id: string) {
+    const { conversation } = await api.getConversation(id);
+    setConversationId(conversation.id);
+    setMessages(conversation.messages);
+    setToolRuns(remapRuns(conversation.toolRuns ?? {}));
+    setUsage(conversation.usage ?? { input: 0, output: 0 });
+    setError(null);
+  }
+
+  // On mount: resume the most recent conversation, like returning to ChatGPT.
+  useEffect(() => {
+    if (loadedRef.current) return;
+    loadedRef.current = true;
+    api.listConversations().then(async ({ conversations: list }) => {
+      setConversations(list);
+      if (list.length > 0) await loadConversation(list[0].id).catch(() => {});
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-save the transcript (debounced) so navigation and reloads lose nothing.
+  useEffect(() => {
+    if (messages.length === 0) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      const firstText = messages
+        .find((m) => m.role === "user")
+        ?.content.find((b) => b.type === "text")?.text;
+      const title = (firstText ?? "Untitled chat").slice(0, 60);
+      const res = await api
+        .saveConversation({
+          id: conversationId ?? undefined,
+          title,
+          messages,
+          toolRuns,
+          usage,
+        })
+        .catch(() => null);
+      if (res && !conversationId) setConversationId(res.conversation.id);
+      api.listConversations().then((r) => setConversations(r.conversations));
+    }, 600);
+    return () => saveTimer.current && clearTimeout(saveTimer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, toolRuns, usage]);
+
+  function newChat() {
+    setConversationId(null);
+    setMessages([]);
+    setToolRuns({});
+    setUsage({ input: 0, output: 0 });
+    setError(null);
+  }
 
   useEffect(() => {
     api
@@ -291,15 +363,38 @@ export default function ChatScreen({ sessions, onClose, onHostEvent }: Props) {
               {usage.input.toLocaleString()} in / {usage.output.toLocaleString()} out tok
             </span>
           )}
+          {conversations.length > 0 && (
+            <select
+              className="input input-sm"
+              title="Saved conversations — auto-saved, survive navigation and reloads"
+              value={conversationId ?? ""}
+              onChange={(e) => e.target.value && loadConversation(e.target.value)}
+            >
+              {!conversationId && <option value="">— new chat —</option>}
+              {conversations.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.title} · {new Date(c.updatedAt).toLocaleDateString()}
+                </option>
+              ))}
+            </select>
+          )}
+          {conversationId && (
+            <button
+              className="btn btn-ghost btn-sm"
+              title="Delete this conversation"
+              onClick={async () => {
+                await api.deleteConversation(conversationId);
+                setConversations((prev) => prev.filter((c) => c.id !== conversationId));
+                newChat();
+              }}
+            >
+              ✕
+            </button>
+          )}
           <button
             className="btn btn-ghost btn-sm"
             disabled={messages.length === 0}
-            onClick={() => {
-              setMessages([]);
-              setToolRuns({});
-              setUsage({ input: 0, output: 0 });
-              setError(null);
-            }}
+            onClick={newChat}
           >
             New chat
           </button>
