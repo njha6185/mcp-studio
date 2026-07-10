@@ -11,11 +11,21 @@ interface Props {
   tool: McpTool;
   record: CallRecord;
   onHostEvent: (message: string) => void;
+  serverName?: string;
+  /** Bumped by App when the dev-mode template file changes on disk. */
+  devTick?: number;
 }
 
 type Tab = "widget" | "content" | "raw";
 
-export default function ResultView({ sessionId, tool, record, onHostEvent }: Props) {
+export default function ResultView({
+  sessionId,
+  tool,
+  record,
+  onHostEvent,
+  serverName,
+  devTick,
+}: Props) {
   const result = record.result;
   const widget = result && !record.error ? detectWidget(tool, result) : null;
   const [tab, setTab] = useState<Tab>(widget ? "widget" : "content");
@@ -48,6 +58,53 @@ export default function ResultView({ sessionId, tool, record, onHostEvent }: Pro
   useEffect(() => {
     setTab(hasWidget ? "widget" : "content");
   }, [record.id, hasWidget]);
+
+  // ---- Widget dev mode: local template file overrides the served one ----
+  const [devPath, setDevPath] = useState("");
+  const [devEnabled, setDevEnabled] = useState(false);
+  const [devHtml, setDevHtml] = useState<string | null>(null);
+  const [devErr, setDevErr] = useState<string | null>(null);
+
+  async function enableDev() {
+    setDevErr(null);
+    try {
+      const res = await api.startDevWidget(sessionId, devPath.trim());
+      setDevHtml(res.html);
+      setDevEnabled(true);
+      onHostEvent(`Dev template enabled: ${devPath.trim()}`);
+    } catch (err) {
+      setDevErr(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function disableDev() {
+    setDevEnabled(false);
+    setDevHtml(null);
+    await api.stopDevWidget(sessionId).catch(() => {});
+  }
+
+  useEffect(() => {
+    if (!devEnabled || !devTick) return;
+    api
+      .getDevWidgetContent(sessionId)
+      .then((res) => setDevHtml(res.html))
+      .catch(() => {});
+  }, [devTick, devEnabled, sessionId]);
+
+  // ---- Pin result as a regression snapshot ----
+  const [pinned, setPinned] = useState(false);
+  async function pin() {
+    if (!result) return;
+    await api.createSnapshot({
+      serverName,
+      toolName: tool.name,
+      args: record.args,
+      expected: result,
+    });
+    setPinned(true);
+    setTimeout(() => setPinned(false), 1500);
+    onHostEvent(`Pinned snapshot for ${tool.name}`);
+  }
 
   // Validate structuredContent against the tool's declared outputSchema.
   const schemaIssues = useMemo(() => {
@@ -85,6 +142,15 @@ export default function ResultView({ sessionId, tool, record, onHostEvent }: Pro
           Raw
         </button>
         <span className="result-meta">
+          {!record.error && !result.isError && (
+            <button
+              className="btn btn-ghost btn-sm"
+              title="Save this call + result as a regression snapshot (Snapshots screen)"
+              onClick={pin}
+            >
+              {pinned ? "Pinned ✓" : "📌 Pin result"}
+            </button>
+          )}
           {schemaIssues !== null &&
             (schemaIssues.length === 0 ? (
               <span className="badge badge-ok" title="structuredContent matches the tool's outputSchema">
@@ -129,10 +195,18 @@ export default function ResultView({ sessionId, tool, record, onHostEvent }: Pro
               key={record.id}
               sessionId={sessionId}
               source={widget}
-              templateHtml={templateHtml}
+              templateHtml={devEnabled && devHtml ? devHtml : templateHtml}
               toolInput={record.args}
               result={result}
               onHostEvent={onHostEvent}
+              dev={{
+                enabled: devEnabled,
+                path: devPath,
+                error: devErr,
+                onPathChange: setDevPath,
+                onEnable: enableDev,
+                onDisable: disableDev,
+              }}
             />
           )}
         </div>

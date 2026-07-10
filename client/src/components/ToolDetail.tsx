@@ -22,6 +22,8 @@ interface Props {
   onHostEvent: (message: string) => void;
   prefill?: ToolPrefill | null;
   progress?: ProgressEvent | null;
+  serverName?: string;
+  devTick?: number;
 }
 
 function defaultsFromSchema(tool: McpTool): Record<string, unknown> {
@@ -63,6 +65,8 @@ export default function ToolDetail({
   onHostEvent,
   prefill,
   progress,
+  serverName,
+  devTick,
 }: Props) {
   const [values, setValues] = useState<Record<string, unknown>>(() =>
     defaultsFromSchema(tool)
@@ -294,6 +298,8 @@ export default function ToolDetail({
             tool={tool}
             record={latest}
             onHostEvent={onHostEvent}
+            serverName={serverName}
+            devTick={devTick}
           />
         </section>
       )}

@@ -3,6 +3,7 @@ import type { McpResourceContents, McpResourceTemplate } from "../types";
 import { decodeResourceText } from "../widget/detect";
 import JsonView from "./JsonView";
 import InfoTip from "./InfoTip";
+import CompletableInput from "./CompletableInput";
 import * as api from "../api";
 
 interface Props {
@@ -84,10 +85,12 @@ export default function ResourceTemplatePanel({ sessionId, template }: Props) {
               <span className="field-name">{v}</span>
               <span className="field-required">required</span>
             </label>
-            <input
-              className="input"
+            <CompletableInput
+              sessionId={sessionId}
+              completionRef={{ type: "ref/resource", uri: template.uriTemplate }}
+              argName={v}
               value={values[v] ?? ""}
-              onChange={(e) => setValues({ ...values, [v]: e.target.value })}
+              onChange={(val) => setValues({ ...values, [v]: val })}
             />
           </div>
         ))}

@@ -7,6 +7,15 @@ import { useTheme } from "../theme";
 import JsonView from "../components/JsonView";
 import * as api from "../api";
 
+export interface DevControls {
+  enabled: boolean;
+  path: string;
+  error: string | null;
+  onPathChange: (path: string) => void;
+  onEnable: () => void;
+  onDisable: () => void;
+}
+
 interface Props {
   sessionId: string;
   source: WidgetSource;
@@ -14,6 +23,7 @@ interface Props {
   toolInput: Record<string, unknown>;
   result: ToolCallResult;
   onHostEvent: (message: string) => void;
+  dev?: DevControls;
 }
 
 interface BridgeEvent {
@@ -25,7 +35,7 @@ interface BridgeEvent {
 }
 
 type Preset = "inline" | "mobile" | "fullscreen";
-type InspectorTab = "log" | "globals" | "mock";
+type InspectorTab = "log" | "globals" | "mock" | "dev";
 
 const SANDBOX = "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox";
 const MIN_HEIGHT = 220;
@@ -40,6 +50,7 @@ export default function WidgetFrame({
   toolInput,
   result,
   onHostEvent,
+  dev,
 }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(360);
@@ -293,6 +304,7 @@ export default function WidgetFrame({
         ))}
       </div>
       {mockOutput && <span className="badge badge-widget">mocked output</span>}
+      {dev?.enabled && <span className="badge badge-widget">dev template</span>}
       <button
         className={`btn btn-ghost btn-sm ${inspectorOpen ? "active" : ""}`}
         onClick={() => setInspectorOpen(!inspectorOpen)}
@@ -310,6 +322,12 @@ export default function WidgetFrame({
             ["log", `Bridge log ${bridgeLog.length ? `(${bridgeLog.length})` : ""}`],
             ["globals", "Globals"],
             ["mock", "Mock output"],
+            ...(dev && source.kind === "openai-template"
+              ? ([["dev", dev.enabled ? "Dev template ●" : "Dev template"]] as [
+                  InspectorTab,
+                  string,
+                ][])
+              : []),
           ] as [InspectorTab, string][]
         ).map(([t, label]) => (
           <button
@@ -358,6 +376,39 @@ export default function WidgetFrame({
           }}
           label="current widget globals"
         />
+      )}
+
+      {inspectorTab === "dev" && dev && (
+        <div>
+          <div className="field-desc" style={{ marginBottom: 8 }}>
+            Load the widget template from a local HTML file instead of the server's
+            resource. The widget re-renders automatically whenever the file is
+            saved — edit-and-see without touching your server.
+          </div>
+          <div className="run-row">
+            <input
+              className="input input-code"
+              placeholder="/absolute/path/to/widget.html"
+              value={dev.path}
+              disabled={dev.enabled}
+              onChange={(e) => dev.onPathChange(e.target.value)}
+            />
+            {dev.enabled ? (
+              <button className="btn btn-ghost btn-sm" onClick={dev.onDisable}>
+                Stop
+              </button>
+            ) : (
+              <button
+                className="btn btn-primary btn-sm"
+                disabled={!dev.path.trim()}
+                onClick={dev.onEnable}
+              >
+                Enable
+              </button>
+            )}
+          </div>
+          {dev.error && <div className="field-error">{dev.error}</div>}
+        </div>
       )}
 
       {inspectorTab === "mock" && (

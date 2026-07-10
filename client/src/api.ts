@@ -215,6 +215,7 @@ export interface EventHandlers {
   onFrame?: (f: RawFrame) => void;
   onProgress?: (p: ProgressEvent) => void;
   onServerRequest?: (r: ServerRequest) => void;
+  onDevWidget?: (d: { path: string; ts: number }) => void;
   onClosed?: () => void;
 }
 
@@ -237,6 +238,7 @@ export function subscribeEvents(
   on("frame", handlers.onFrame);
   on("progress", handlers.onProgress);
   on("serverRequest", handlers.onServerRequest);
+  on("devwidget", handlers.onDevWidget);
   es.addEventListener("closed", () => {
     es.close();
     handlers.onClosed?.();
@@ -269,6 +271,230 @@ export function unsubscribeResource(sessionId: string, uri: string): Promise<unk
       body: JSON.stringify({ uri }),
     })
   );
+}
+
+// ---------------------------------------------------------------------------
+// Health & completions
+// ---------------------------------------------------------------------------
+
+export function ping(sessionId: string): Promise<{ ok: boolean; latencyMs: number }> {
+  return request(`/api/${sessionId}/ping`, { method: "POST" });
+}
+
+export interface CompletionRef {
+  type: "ref/prompt" | "ref/resource";
+  name?: string;
+  uri?: string;
+}
+
+export function complete(
+  sessionId: string,
+  ref: CompletionRef,
+  argName: string,
+  value: string
+): Promise<{ completion: { values: string[] } }> {
+  return request(`/api/${sessionId}/complete`, {
+    method: "POST",
+    body: JSON.stringify({ ref, argument: { name: argName, value } }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Widget dev mode
+// ---------------------------------------------------------------------------
+
+export function startDevWidget(
+  sessionId: string,
+  path: string
+): Promise<{ ok: boolean; html: string }> {
+  return request(`/api/${sessionId}/devwidget`, {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+}
+
+export function getDevWidgetContent(sessionId: string): Promise<{ html: string }> {
+  return request(`/api/${sessionId}/devwidget/content`);
+}
+
+export function stopDevWidget(sessionId: string): Promise<void> {
+  return request(`/api/${sessionId}/devwidget`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Config import & persistent store
+// ---------------------------------------------------------------------------
+
+export interface ImportedServer {
+  name: string;
+  params: ConnectParams;
+}
+
+export function detectConfigs(): Promise<{
+  configs: { path: string; servers: ImportedServer[] }[];
+}> {
+  return request("/api/configs/detect");
+}
+
+export function parseConfig(json: string): Promise<{ servers: ImportedServer[] }> {
+  return request("/api/configs/parse", {
+    method: "POST",
+    body: JSON.stringify({ json }),
+  });
+}
+
+export interface SavedServer {
+  id: string;
+  name: string;
+  params: ConnectParams;
+  createdAt: number;
+}
+
+export function listSavedServers(): Promise<{ servers: SavedServer[] }> {
+  return request("/api/store/servers");
+}
+
+export function saveServer(
+  name: string,
+  params: ConnectParams
+): Promise<{ servers: SavedServer[] }> {
+  return request("/api/store/servers", {
+    method: "POST",
+    body: JSON.stringify({ name, params }),
+  });
+}
+
+export function deleteSavedServer(id: string): Promise<{ servers: SavedServer[] }> {
+  return request(`/api/store/servers/${id}`, { method: "DELETE" });
+}
+
+export interface Snapshot {
+  id: string;
+  name: string;
+  serverName?: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  meta?: Record<string, unknown>;
+  expected: unknown;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export function listSnapshots(): Promise<{ snapshots: Snapshot[] }> {
+  return request("/api/store/snapshots");
+}
+
+export function createSnapshot(snapshot: {
+  name?: string;
+  serverName?: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  meta?: Record<string, unknown>;
+  expected: unknown;
+}): Promise<{ snapshot: Snapshot }> {
+  return request("/api/store/snapshots", {
+    method: "POST",
+    body: JSON.stringify(snapshot),
+  });
+}
+
+export function updateSnapshot(
+  id: string,
+  patch: { expected?: unknown; name?: string }
+): Promise<{ snapshot: Snapshot }> {
+  return request(`/api/store/snapshots/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteSnapshot(id: string): Promise<void> {
+  return request(`/api/store/snapshots/${id}`, { method: "DELETE" });
+}
+
+export interface OAuthEntryView {
+  serverUrl: string;
+  registered: boolean;
+  hasTokens: boolean;
+  tokenPreview: string | null;
+  scope: string | null;
+  savedAt: number | null;
+}
+
+export function listOAuthEntries(): Promise<{ entries: OAuthEntryView[] }> {
+  return request("/api/store/oauth");
+}
+
+export function forgetOAuth(url?: string): Promise<void> {
+  return request(`/api/store/oauth${url ? `?url=${encodeURIComponent(url)}` : ""}`, {
+    method: "DELETE",
+  });
+}
+
+export interface StudioSettings {
+  hasApiKey: boolean;
+  apiKeyPreview: string | null;
+  chatModel: string;
+  storePath: string;
+}
+
+export function getSettings(): Promise<StudioSettings> {
+  return request("/api/store/settings");
+}
+
+export function saveSettings(patch: {
+  anthropicApiKey?: string;
+  chatModel?: string;
+}): Promise<void> {
+  return request("/api/store/settings", {
+    method: "POST",
+    body: JSON.stringify(patch),
+  });
+}
+
+export function clearStore(
+  section: "savedServers" | "oauth" | "snapshots" | "settings" | "all"
+): Promise<void> {
+  return request(`/api/store?section=${section}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Chat simulator
+// ---------------------------------------------------------------------------
+
+export interface AnthropicContentBlock {
+  type: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  tool_use_id?: string;
+  content?: unknown;
+  is_error?: boolean;
+  [key: string]: unknown;
+}
+
+export interface AnthropicMessage {
+  role: "user" | "assistant";
+  content: AnthropicContentBlock[];
+}
+
+export interface ChatResponse {
+  content: AnthropicContentBlock[];
+  stop_reason: string;
+  usage?: { input_tokens: number; output_tokens: number };
+  model?: string;
+}
+
+export function chat(
+  sessionId: string,
+  messages: AnthropicMessage[],
+  model?: string
+): Promise<ChatResponse> {
+  return request(`/api/${sessionId}/chat`, {
+    method: "POST",
+    body: JSON.stringify({ messages, model }),
+  });
 }
 
 export function respondToServerRequest(

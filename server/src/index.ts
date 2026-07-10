@@ -15,6 +15,9 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
+import fs from "node:fs";
+import { store, persist, clearSection, STORE_PATH, type Snapshot } from "./store.js";
+import { detectConfigs, parseConfigJson } from "./configs.js";
 import {
   CreateMessageRequestSchema,
   ElicitRequestSchema,
@@ -42,6 +45,8 @@ interface Session {
   frames: FrameRecord[];
   frameSeq: number;
   pending: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>;
+  devWatcher?: fs.FSWatcher;
+  devPath?: string;
 }
 
 const sessions = new Map<string, Session>();
@@ -50,14 +55,8 @@ const sessions = new Map<string, Session>();
 // OAuth support for remote servers
 // ---------------------------------------------------------------------------
 
-interface OAuthRecord {
-  clientInformation?: OAuthClientInformationMixed;
-  tokens?: OAuthTokens;
-  codeVerifier?: string;
-}
-
-/** Credentials keyed by server URL so reconnects reuse tokens without a new flow. */
-const oauthStore = new Map<string, OAuthRecord>();
+/** Credentials keyed by server URL, persisted in the JSON store. */
+const oauthStore = store.oauth;
 
 interface PendingAuth {
   params: ConnectRequest;
@@ -100,32 +99,36 @@ class StudioOAuthProvider implements OAuthClientProvider {
     return this.stateId;
   }
 
-  private record(): OAuthRecord {
-    let rec = oauthStore.get(this.serverUrl);
+  private record() {
+    let rec = oauthStore[this.serverUrl];
     if (!rec) {
       rec = {};
-      oauthStore.set(this.serverUrl, rec);
+      oauthStore[this.serverUrl] = rec;
     }
+    rec.savedAt = Date.now();
+    persist();
     return rec;
   }
 
   clientInformation() {
-    return oauthStore.get(this.serverUrl)?.clientInformation;
+    return oauthStore[this.serverUrl]?.clientInformation as
+      | OAuthClientInformationMixed
+      | undefined;
   }
   saveClientInformation(info: OAuthClientInformationMixed) {
-    this.record().clientInformation = info;
+    this.record().clientInformation = info as Record<string, unknown>;
   }
   tokens() {
-    return oauthStore.get(this.serverUrl)?.tokens;
+    return oauthStore[this.serverUrl]?.tokens as OAuthTokens | undefined;
   }
   saveTokens(tokens: OAuthTokens) {
-    this.record().tokens = tokens;
+    this.record().tokens = tokens as unknown as Record<string, unknown>;
   }
   saveCodeVerifier(verifier: string) {
     this.record().codeVerifier = verifier;
   }
   codeVerifier(): string {
-    const v = oauthStore.get(this.serverUrl)?.codeVerifier;
+    const v = oauthStore[this.serverUrl]?.codeVerifier;
     if (!v) throw new Error("No PKCE code verifier saved for this server");
     return v;
   }
@@ -133,12 +136,13 @@ class StudioOAuthProvider implements OAuthClientProvider {
     this.authorizationUrl = url.toString();
   }
   invalidateCredentials?(scope: "all" | "client" | "tokens" | "verifier") {
-    const rec = oauthStore.get(this.serverUrl);
+    const rec = oauthStore[this.serverUrl];
     if (!rec) return;
-    if (scope === "all") oauthStore.delete(this.serverUrl);
+    if (scope === "all") delete oauthStore[this.serverUrl];
     if (scope === "client") delete rec.clientInformation;
     if (scope === "tokens") delete rec.tokens;
     if (scope === "verifier") delete rec.codeVerifier;
+    persist();
   }
 }
 
@@ -271,6 +275,7 @@ async function establishSession(
   session.capabilities = client.getServerCapabilities();
 
   transport.onclose = () => {
+    session.devWatcher?.close();
     broadcast(session, "closed", {});
     for (const sub of session.subscribers) sub.end();
     sessions.delete(id);
@@ -497,6 +502,255 @@ app.post("/api/:sessionId/respond", (req, res) => {
   if (error) pending.reject(new Error(String(error)));
   else pending.resolve(result);
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Health, completions
+// ---------------------------------------------------------------------------
+
+app.post("/api/:sessionId/ping", async (req, res) => {
+  const session = getSession(req, res);
+  if (!session) return;
+  const started = Date.now();
+  try {
+    await session.client.ping();
+    res.json({ ok: true, latencyMs: Date.now() - started });
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post("/api/:sessionId/complete", (req, res) => {
+  const session = getSession(req, res);
+  if (!session) return;
+  if (!hasCapability(session, "completions"))
+    return void res.json({ completion: { values: [] } });
+  const { ref, argument, context } = req.body ?? {};
+  handle(res, () => session.client.complete({ ref, argument, context }));
+});
+
+// ---------------------------------------------------------------------------
+// Widget dev mode: watch a local template file, notify on change
+// ---------------------------------------------------------------------------
+
+app.post("/api/:sessionId/devwidget", (req, res) => {
+  const session = getSession(req, res);
+  if (!session) return;
+  const filePath = String(req.body?.path ?? "");
+  if (!filePath || !fs.existsSync(filePath))
+    return void res.status(400).json({ error: `File not found: ${filePath}` });
+  session.devWatcher?.close();
+  session.devPath = filePath;
+  let debounce: NodeJS.Timeout | null = null;
+  session.devWatcher = fs.watch(filePath, () => {
+    if (debounce) clearTimeout(debounce);
+    debounce = setTimeout(
+      () => broadcast(session, "devwidget", { path: filePath, ts: Date.now() }),
+      100
+    );
+  });
+  res.json({ ok: true, html: fs.readFileSync(filePath, "utf8") });
+});
+
+app.get("/api/:sessionId/devwidget/content", (req, res) => {
+  const session = getSession(req, res);
+  if (!session) return;
+  if (!session.devPath) return void res.status(404).json({ error: "Dev mode not active" });
+  try {
+    res.json({ html: fs.readFileSync(session.devPath, "utf8") });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.delete("/api/:sessionId/devwidget", (req, res) => {
+  const session = getSession(req, res);
+  if (!session) return;
+  session.devWatcher?.close();
+  session.devWatcher = undefined;
+  session.devPath = undefined;
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Config import
+// ---------------------------------------------------------------------------
+
+app.get("/api/configs/detect", (_req, res) => {
+  res.json({ configs: detectConfigs() });
+});
+
+app.post("/api/configs/parse", (req, res) => {
+  try {
+    const json =
+      typeof req.body?.json === "string" ? JSON.parse(req.body.json) : req.body?.json;
+    res.json({ servers: parseConfigJson(json) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Persistent store: saved servers, snapshots, oauth viewer, settings
+// ---------------------------------------------------------------------------
+
+app.get("/api/store/servers", (_req, res) => res.json({ servers: store.savedServers }));
+
+app.post("/api/store/servers", (req, res) => {
+  const { name, params } = req.body ?? {};
+  if (!name || !params) return void res.status(400).json({ error: "name and params required" });
+  const existing = store.savedServers.find((s) => s.name === name);
+  if (existing) existing.params = params;
+  else
+    store.savedServers.push({ id: randomUUID(), name, params, createdAt: Date.now() });
+  persist();
+  res.json({ servers: store.savedServers });
+});
+
+app.delete("/api/store/servers/:id", (req, res) => {
+  store.savedServers = store.savedServers.filter((s) => s.id !== req.params.id);
+  persist();
+  res.json({ servers: store.savedServers });
+});
+
+app.get("/api/store/snapshots", (_req, res) => res.json({ snapshots: store.snapshots }));
+
+app.post("/api/store/snapshots", (req, res) => {
+  const { name, serverName, toolName, args, meta, expected } = req.body ?? {};
+  if (!toolName) return void res.status(400).json({ error: "toolName required" });
+  const snapshot: Snapshot = {
+    id: randomUUID(),
+    name: name || `${toolName} · ${new Date().toLocaleString()}`,
+    serverName,
+    toolName,
+    args: args ?? {},
+    meta,
+    expected,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  store.snapshots.push(snapshot);
+  persist();
+  res.json({ snapshot });
+});
+
+app.put("/api/store/snapshots/:id", (req, res) => {
+  const snapshot = store.snapshots.find((s) => s.id === req.params.id);
+  if (!snapshot) return void res.status(404).json({ error: "Unknown snapshot" });
+  if (req.body?.expected !== undefined) snapshot.expected = req.body.expected;
+  if (req.body?.name) snapshot.name = req.body.name;
+  snapshot.updatedAt = Date.now();
+  persist();
+  res.json({ snapshot });
+});
+
+app.delete("/api/store/snapshots/:id", (req, res) => {
+  store.snapshots = store.snapshots.filter((s) => s.id !== req.params.id);
+  persist();
+  res.json({ ok: true });
+});
+
+app.get("/api/store/oauth", (_req, res) => {
+  const entries = Object.entries(store.oauth).map(([url, rec]) => {
+    const tokens = rec.tokens as { access_token?: string; expires_in?: number; scope?: string } | undefined;
+    return {
+      serverUrl: url,
+      registered: Boolean(rec.clientInformation),
+      hasTokens: Boolean(tokens?.access_token),
+      tokenPreview: tokens?.access_token ? `${tokens.access_token.slice(0, 8)}…` : null,
+      scope: tokens?.scope ?? null,
+      savedAt: rec.savedAt ?? null,
+    };
+  });
+  res.json({ entries });
+});
+
+app.delete("/api/store/oauth", (req, res) => {
+  const url = req.query.url ? String(req.query.url) : null;
+  if (url) delete store.oauth[url];
+  else clearSection("oauth");
+  persist();
+  res.json({ ok: true });
+});
+
+app.get("/api/store/settings", (_req, res) => {
+  res.json({
+    hasApiKey: Boolean(store.settings.anthropicApiKey),
+    apiKeyPreview: store.settings.anthropicApiKey
+      ? `${store.settings.anthropicApiKey.slice(0, 10)}…`
+      : null,
+    chatModel: store.settings.chatModel ?? "claude-sonnet-5",
+    storePath: STORE_PATH,
+  });
+});
+
+app.post("/api/store/settings", (req, res) => {
+  const { anthropicApiKey, chatModel } = req.body ?? {};
+  if (anthropicApiKey !== undefined)
+    store.settings.anthropicApiKey = anthropicApiKey || undefined;
+  if (chatModel !== undefined) store.settings.chatModel = chatModel || undefined;
+  persist();
+  res.json({ ok: true });
+});
+
+app.delete("/api/store", (req, res) => {
+  const section = String(req.query.section ?? "all") as Parameters<typeof clearSection>[0];
+  clearSection(section);
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Chat simulator: one Anthropic Messages API call per request; the browser
+// drives the tool-use loop through the normal /tools/call endpoint.
+// ---------------------------------------------------------------------------
+
+app.post("/api/:sessionId/chat", async (req, res) => {
+  const session = getSession(req, res);
+  if (!session) return;
+  const apiKey = store.settings.anthropicApiKey;
+  if (!apiKey)
+    return void res
+      .status(400)
+      .json({ error: "No Anthropic API key set — add one in Settings" });
+  const { messages, system } = req.body ?? {};
+  const model = req.body?.model || store.settings.chatModel || "claude-sonnet-5";
+  try {
+    const toolsResult = hasCapability(session, "tools")
+      ? await session.client.listTools()
+      : { tools: [] };
+    const tools = (toolsResult.tools ?? []).map((t) => ({
+      name: t.name,
+      description: t.description ?? "",
+      input_schema: t.inputSchema ?? { type: "object" },
+    }));
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 4096,
+        system:
+          system ??
+          "You are simulating an AI assistant host (like ChatGPT or Claude) connected to an MCP server. Use the available tools when they help answer the user. Keep replies concise.",
+        messages,
+        ...(tools.length ? { tools } : {}),
+      }),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      const message =
+        (body as { error?: { message?: string } }).error?.message ??
+        `${response.status} ${response.statusText}`;
+      return void res.status(502).json({ error: message });
+    }
+    res.json(body);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 app.listen(PORT, () => {

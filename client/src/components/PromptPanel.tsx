@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { McpPrompt } from "../types";
 import JsonView from "./JsonView";
 import InfoTip from "./InfoTip";
+import CompletableInput from "./CompletableInput";
 import * as api from "../api";
 
 interface Props {
@@ -58,10 +59,12 @@ export default function PromptPanel({ sessionId, prompt }: Props) {
               {arg.required && <span className="field-required">required</span>}
             </label>
             {arg.description && <div className="field-desc">{arg.description}</div>}
-            <input
-              className="input"
+            <CompletableInput
+              sessionId={sessionId}
+              completionRef={{ type: "ref/prompt", name: prompt.name }}
+              argName={arg.name}
               value={values[arg.name] ?? ""}
-              onChange={(e) => setValues({ ...values, [arg.name]: e.target.value })}
+              onChange={(val) => setValues({ ...values, [arg.name]: val })}
             />
           </div>
         ))}

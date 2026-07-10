@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ConnectParams,
   McpPrompt,
@@ -17,6 +17,9 @@ import { getOpenAiTemplateUri } from "./widget/detect";
 import { ThemeToggle } from "./theme";
 import InfoTip from "./components/InfoTip";
 import HistoryPanel, { type HistoryUseMode } from "./components/HistoryPanel";
+import SnapshotsScreen from "./components/SnapshotsScreen";
+import SettingsScreen from "./components/SettingsScreen";
+import ChatScreen from "./components/ChatScreen";
 import * as api from "./api";
 import type {
   HistoryEntry,
@@ -61,6 +64,13 @@ export default function App() {
   const [prefill, setPrefill] = useState<ToolPrefill | null>(null);
   const [logLevel, setLogLevel] = useState("");
   const [connectStatus, setConnectStatus] = useState<string | null>(null);
+  const [view, setView] = useState<"workspace" | "chat" | "snapshots" | "settings">(
+    "workspace"
+  );
+  const [devTick, setDevTick] = useState(0);
+  const [latency, setLatency] = useState<number | null>(null);
+  const [health, setHealth] = useState<"ok" | "reconnecting" | "lost">("ok");
+  const [lastParams, setLastParams] = useState<ConnectParams | null>(null);
 
   useEffect(() => {
     return api.subscribeHistory((entry) => {
@@ -121,6 +131,9 @@ export default function App() {
       setConnectStatus(null);
     }
     saveRecent(params);
+    setLastParams(params);
+    setHealth("ok");
+    setLatency(null);
     setSession(info);
     addLog(
       `Connected to ${info.serverInfo?.name ?? "server"} v${info.serverInfo?.version ?? "?"}`
@@ -170,12 +183,60 @@ export default function App() {
         addLog(`server request: ${r.method}`);
         setServerRequests((prev) => [...prev, r]);
       },
+      onDevWidget: () => setDevTick((t) => t + 1),
       onClosed: () => {
-        addLog("Connection closed by server");
+        addLog("Connection closed by server — attempting to reconnect");
         setSession(null);
+        setHealth("reconnecting");
+        reconnect();
       },
     });
     return unsubscribe;
+  }, [session?.sessionId]);
+
+  // Auto-reconnect with backoff after the connection drops.
+  const reconnect = useCallback(async () => {
+    const params = lastParamsRef.current;
+    if (!params) return;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      await new Promise((r) => setTimeout(r, Math.min(15000, attempt * 2000)));
+      try {
+        let info = await api.connect(params);
+        if ("authRequired" in info) break; // needs user interaction — give up silently
+        setSession(info);
+        setHealth("ok");
+        addLog(`Reconnected (attempt ${attempt})`);
+        await refresh(info.sessionId);
+        return;
+      } catch {
+        addLog(`Reconnect attempt ${attempt} failed`);
+      }
+    }
+    setHealth("lost");
+  }, []);
+  const lastParamsRef = useRef<ConnectParams | null>(null);
+  useEffect(() => {
+    lastParamsRef.current = lastParams;
+  }, [lastParams]);
+
+  // Periodic ping for latency + liveness.
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await api.ping(session.sessionId);
+        if (!cancelled) setLatency(res.latencyMs);
+      } catch {
+        if (!cancelled) setLatency(null);
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, [session?.sessionId]);
 
   const handleHistoryUse = useCallback(
@@ -244,8 +305,46 @@ export default function App() {
     [prompts, q]
   );
 
+  if (view === "settings") {
+    return <SettingsScreen onClose={() => setView("workspace")} />;
+  }
+
   if (!session) {
-    return <ConnectScreen onConnect={connect} status={connectStatus} />;
+    return (
+      <ConnectScreen
+        onConnect={connect}
+        status={
+          connectStatus ??
+          (health === "reconnecting"
+            ? "Connection lost — reconnecting…"
+            : health === "lost"
+              ? "Connection lost and reconnect failed — connect again manually."
+              : null)
+        }
+        onOpenSettings={() => setView("settings")}
+      />
+    );
+  }
+
+  const serverName =
+    session.serverInfo?.title ?? session.serverInfo?.name ?? "MCP server";
+
+  if (view === "snapshots") {
+    return (
+      <SnapshotsScreen sessionId={session.sessionId} onClose={() => setView("workspace")} />
+    );
+  }
+
+  if (view === "chat") {
+    return (
+      <ChatScreen
+        sessionId={session.sessionId}
+        tools={tools}
+        serverName={serverName}
+        onClose={() => setView("workspace")}
+        onHostEvent={addLog}
+      />
+    );
   }
 
   const selectedTool =
@@ -269,12 +368,22 @@ export default function App() {
         <div className="topbar-brand">◈ MCP Studio</div>
         <div className="topbar-server">
           <span className="status-dot" />
-          {session.serverInfo?.title ?? session.serverInfo?.name ?? "MCP server"}
+          {serverName}
           {session.serverInfo?.version && (
             <span className="field-type">v{session.serverInfo.version}</span>
           )}
+          {latency !== null && <span className="field-type">{latency} ms</span>}
         </div>
         <div className="topbar-actions">
+          <button className="btn btn-ghost btn-sm" onClick={() => setView("chat")}>
+            💬 Chat
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={() => setView("snapshots")}>
+            📌 Snapshots
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={() => setView("settings")}>
+            ⚙
+          </button>
           <ThemeToggle />
           <button
             className="btn btn-ghost btn-sm"
@@ -420,6 +529,8 @@ export default function App() {
               onHostEvent={addLog}
               prefill={prefill}
               progress={progress}
+              serverName={serverName}
+              devTick={devTick}
             />
           ) : selectedResource ? (
             <ResourcePanel

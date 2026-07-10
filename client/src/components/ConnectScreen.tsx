@@ -1,11 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ConnectParams, TransportType } from "../types";
 import { ThemeToggle } from "../theme";
 import InfoTip from "./InfoTip";
+import * as api from "../api";
+import type { ImportedServer, SavedServer } from "../api";
 
 interface Props {
   onConnect: (params: ConnectParams) => Promise<void>;
   status?: string | null;
+  onOpenSettings?: () => void;
 }
 
 const RECENT_KEY = "mcp-studio-recent";
@@ -26,7 +29,11 @@ export function saveRecent(params: ConnectParams) {
   localStorage.setItem(RECENT_KEY, JSON.stringify(recent.slice(0, 6)));
 }
 
-export default function ConnectScreen({ onConnect, status }: Props) {
+function describeParams(p: ConnectParams): string {
+  return p.type === "stdio" ? `${p.command} ${(p.args ?? []).join(" ")}` : p.url ?? "";
+}
+
+export default function ConnectScreen({ onConnect, status, onOpenSettings }: Props) {
   const [type, setType] = useState<TransportType>("streamable-http");
   const [url, setUrl] = useState("http://localhost:8000/mcp");
   const [command, setCommand] = useState("");
@@ -34,30 +41,42 @@ export default function ConnectScreen({ onConnect, status }: Props) {
   const [headersText, setHeadersText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState<SavedServer[]>([]);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importFound, setImportFound] = useState<{ source: string; server: ImportedServer }[]>([]);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
   const recent = loadRecent();
+
+  const refreshSaved = () =>
+    api.listSavedServers().then((r) => setSaved(r.servers)).catch(() => {});
+  useEffect(() => {
+    refreshSaved();
+  }, []);
+
+  function currentParams(): ConnectParams {
+    if (type === "stdio")
+      return {
+        type,
+        command: command.trim(),
+        args: argsText.trim() ? argsText.trim().split(/\s+/) : [],
+      };
+    let headers: Record<string, string> | undefined;
+    if (headersText.trim()) {
+      headers = {};
+      for (const line of headersText.split("\n")) {
+        const idx = line.indexOf(":");
+        if (idx > 0) headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+      }
+    }
+    return { type, url: url.trim(), headers };
+  }
 
   async function submit(params?: ConnectParams) {
     setError(null);
     setBusy(true);
     try {
-      let headers: Record<string, string> | undefined;
-      if (!params && headersText.trim()) {
-        headers = {};
-        for (const line of headersText.split("\n")) {
-          const idx = line.indexOf(":");
-          if (idx > 0) headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-        }
-      }
-      const p: ConnectParams =
-        params ??
-        (type === "stdio"
-          ? {
-              type,
-              command: command.trim(),
-              args: argsText.trim() ? argsText.trim().split(/\s+/) : [],
-            }
-          : { type, url: url.trim(), headers });
-      await onConnect(p);
+      await onConnect(params ?? currentParams());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -65,9 +84,50 @@ export default function ConnectScreen({ onConnect, status }: Props) {
     }
   }
 
+  async function saveCurrent() {
+    const name = window.prompt("Name for this server:");
+    if (!name) return;
+    await api.saveServer(name, currentParams());
+    refreshSaved();
+  }
+
+  async function detect() {
+    setImportMsg(null);
+    const { configs } = await api.detectConfigs();
+    const found = configs.flatMap((c) =>
+      c.servers.map((server) => ({ source: c.path.replace(/^.*\//, ""), server }))
+    );
+    setImportFound(found);
+    if (!found.length) setImportMsg("No MCP configs found in the usual locations.");
+  }
+
+  async function parsePasted() {
+    setImportMsg(null);
+    try {
+      const { servers } = await api.parseConfig(importText);
+      setImportFound(servers.map((server) => ({ source: "pasted", server })));
+      if (!servers.length) setImportMsg("No servers found in that JSON.");
+    } catch (err) {
+      setImportMsg(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function addImported(items: { server: ImportedServer }[]) {
+    for (const { server } of items) await api.saveServer(server.name, server.params);
+    setImportFound([]);
+    setImportOpen(false);
+    setImportMsg(null);
+    refreshSaved();
+  }
+
   return (
     <div className="connect-screen">
       <div className="connect-theme-toggle">
+        {onOpenSettings && (
+          <button className="btn btn-ghost btn-sm" onClick={onOpenSettings}>
+            ⚙ Settings
+          </button>
+        )}
         <ThemeToggle />
       </div>
       <div className="connect-card">
@@ -144,7 +204,7 @@ export default function ConnectScreen({ onConnect, status }: Props) {
               <label className="field-label">
                 <span className="field-name">Headers</span>
                 <span className="field-type">optional, one per line</span>
-                <InfoTip text="Extra HTTP headers sent with every request to the server — most commonly an Authorization header for servers that need an API key or bearer token." />
+                <InfoTip text="Extra HTTP headers sent with every request to the server — most commonly an Authorization header for servers that need an API key or bearer token. Servers requiring OAuth are handled automatically: a sign-in tab opens on connect." />
               </label>
               <textarea
                 className="input input-code"
@@ -164,19 +224,109 @@ export default function ConnectScreen({ onConnect, status }: Props) {
         </button>
         {status && <div className="connect-status">{status}</div>}
 
-        {recent.length > 0 && (
-          <div className="recent">
-            <div className="recent-title">Recent</div>
-            {recent.map((r, i) => (
-              <button key={i} className="recent-item" disabled={busy} onClick={() => submit(r)}>
-                <span className="badge">{r.type}</span>
-                <span className="recent-target">
-                  {r.type === "stdio" ? `${r.command} ${(r.args ?? []).join(" ")}` : r.url}
-                </span>
+        <div className="recent">
+          <div className="recent-title">
+            <span>Saved servers</span>
+            <span className="recent-title-actions">
+              <button className="btn-link" onClick={saveCurrent}>
+                ＋ save current
               </button>
-            ))}
+              <button className="btn-link" onClick={() => setImportOpen(!importOpen)}>
+                {importOpen ? "close import" : "import config"}
+              </button>
+            </span>
           </div>
-        )}
+
+          {importOpen && (
+            <div className="import-box">
+              <div className="import-actions">
+                <button className="btn btn-ghost btn-sm" onClick={detect}>
+                  Detect local configs
+                </button>
+                <InfoTip text="Scans the usual locations — claude_desktop_config.json, .mcp.json (project & home), .cursor/mcp.json, .claude.json — or paste any config JSON with an mcpServers / servers map below." />
+              </div>
+              <textarea
+                className="input input-code"
+                rows={3}
+                placeholder='{"mcpServers": {"my-server": {"command": "npx", "args": ["-y", "..."]}}}'
+                value={importText}
+                onChange={(e) => setImportText(e.target.value)}
+              />
+              {importText.trim() && (
+                <button className="btn btn-ghost btn-sm" onClick={parsePasted}>
+                  Parse pasted JSON
+                </button>
+              )}
+              {importMsg && <div className="field-error">{importMsg}</div>}
+              {importFound.length > 0 && (
+                <div className="import-found">
+                  {importFound.map((f, i) => (
+                    <div key={i} className="import-found-row">
+                      <span className="recent-target">
+                        <b>{f.server.name}</b> · {describeParams(f.server.params)}
+                      </span>
+                      <span className="field-type">{f.source}</span>
+                      <button className="btn btn-ghost btn-sm" onClick={() => addImported([f])}>
+                        Add
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={() => addImported(importFound)}
+                  >
+                    Add all ({importFound.length})
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {saved.length === 0 && !importOpen && (
+            <div className="empty-note">
+              No saved servers yet — save the current form or import a config.
+            </div>
+          )}
+          {saved.map((s) => (
+            <div key={s.id} className="recent-item saved-item">
+              <button
+                className="saved-connect"
+                disabled={busy}
+                onClick={() => submit(s.params)}
+              >
+                <span className="badge">{s.params.type}</span>
+                <b>{s.name}</b>
+                <span className="recent-target">{describeParams(s.params)}</span>
+              </button>
+              <button
+                className="btn-link"
+                title="Remove saved server"
+                onClick={() => api.deleteSavedServer(s.id).then(refreshSaved)}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+
+          {recent.length > 0 && (
+            <>
+              <div className="recent-title" style={{ marginTop: 14 }}>
+                Recent
+              </div>
+              {recent.map((r, i) => (
+                <button
+                  key={i}
+                  className="recent-item"
+                  disabled={busy}
+                  onClick={() => submit(r)}
+                >
+                  <span className="badge">{r.type}</span>
+                  <span className="recent-target">{describeParams(r)}</span>
+                </button>
+              ))}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
