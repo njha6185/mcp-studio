@@ -8,16 +8,22 @@ import type {
   SessionInfo,
 } from "./types";
 import ConnectScreen, { saveRecent } from "./components/ConnectScreen";
-import ToolDetail from "./components/ToolDetail";
+import ToolDetail, { type ToolPrefill } from "./components/ToolDetail";
+import ServerRequestModal from "./components/ServerRequestModal";
 import ResourcePanel from "./components/ResourcePanel";
 import ResourceTemplatePanel from "./components/ResourceTemplatePanel";
 import PromptPanel from "./components/PromptPanel";
 import { getOpenAiTemplateUri } from "./widget/detect";
 import { ThemeToggle } from "./theme";
 import InfoTip from "./components/InfoTip";
-import HistoryPanel from "./components/HistoryPanel";
+import HistoryPanel, { type HistoryUseMode } from "./components/HistoryPanel";
 import * as api from "./api";
-import type { HistoryEntry } from "./api";
+import type {
+  HistoryEntry,
+  ProgressEvent,
+  RawFrame,
+  ServerRequest,
+} from "./api";
 
 type SidebarTab = "tools" | "resources" | "prompts";
 type Selection =
@@ -48,6 +54,12 @@ export default function App() {
   const [logOpen, setLogOpen] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [frames, setFrames] = useState<RawFrame[]>([]);
+  const [progress, setProgress] = useState<ProgressEvent | null>(null);
+  const [serverRequests, setServerRequests] = useState<ServerRequest[]>([]);
+  const [resourceUpdate, setResourceUpdate] = useState<{ uri: string; ts: number } | null>(null);
+  const [prefill, setPrefill] = useState<ToolPrefill | null>(null);
+  const [logLevel, setLogLevel] = useState("");
 
   useEffect(() => {
     return api.subscribeHistory((entry) => {
@@ -111,24 +123,76 @@ export default function App() {
     setResources([]);
     setPrompts([]);
     setSelection(null);
+    setFrames([]);
+    setProgress(null);
+    setServerRequests([]);
+    setPrefill(null);
+    setLogLevel("");
   }
 
   useEffect(() => {
     if (!session) return;
-    const unsubscribe = api.subscribeEvents(
-      session.sessionId,
-      (n) => {
-        const method = (n as { method?: string }).method ?? "notification";
-        addLog(`⤷ ${method}`);
+    setFrames([]);
+    const unsubscribe = api.subscribeEvents(session.sessionId, {
+      onNotification: (n) => {
+        const notif = n as { method?: string; params?: Record<string, unknown> };
+        const method = notif.method ?? "notification";
+        if (method === "notifications/message") {
+          const p = notif.params ?? {};
+          const data = typeof p.data === "string" ? p.data : JSON.stringify(p.data);
+          addLog(`[${p.level ?? "log"}]${p.logger ? ` ${p.logger}:` : ""} ${data}`);
+        } else if (method === "notifications/resources/updated") {
+          const uri = String(notif.params?.uri ?? "");
+          addLog(`resource updated: ${uri}`);
+          setResourceUpdate({ uri, ts: Date.now() });
+        } else {
+          addLog(`⤷ ${method}`);
+        }
         if (method === "notifications/tools/list_changed") refresh(session.sessionId);
       },
-      () => {
+      onFrame: (f) => setFrames((prev) => [...prev, f].slice(-1000)),
+      onProgress: (p) => setProgress(p),
+      onServerRequest: (r) => {
+        addLog(`server request: ${r.method}`);
+        setServerRequests((prev) => [...prev, r]);
+      },
+      onClosed: () => {
         addLog("Connection closed by server");
         setSession(null);
-      }
-    );
+      },
+    });
     return unsubscribe;
   }, [session?.sessionId]);
+
+  const handleHistoryUse = useCallback(
+    (entry: HistoryEntry, mode: HistoryUseMode) => {
+      const p = entry.params as {
+        name?: string;
+        arguments?: Record<string, unknown>;
+        _meta?: Record<string, unknown>;
+      };
+      if (!p?.name) return;
+      setTab("tools");
+      setSelection({ kind: "tool", name: p.name });
+      setPrefill({
+        nonce: Date.now(),
+        toolName: p.name,
+        args: p.arguments ?? {},
+        meta: p._meta,
+        autoRun: mode === "replay",
+      });
+    },
+    []
+  );
+
+  async function answerServerRequest(result?: unknown, error?: string) {
+    const current = serverRequests[0];
+    if (!current || !session) return;
+    setServerRequests((prev) => prev.slice(1));
+    await api
+      .respondToServerRequest(session.sessionId, current.id, result, error)
+      .catch((err) => addLog(`Failed to respond: ${err.message}`));
+  }
 
   const q = filter.trim().toLowerCase();
   const filteredTools = useMemo(
@@ -340,9 +404,19 @@ export default function App() {
               sessionId={session.sessionId}
               tool={selectedTool}
               onHostEvent={addLog}
+              prefill={prefill}
+              progress={progress}
             />
           ) : selectedResource ? (
-            <ResourcePanel sessionId={session.sessionId} resource={selectedResource} />
+            <ResourcePanel
+              sessionId={session.sessionId}
+              resource={selectedResource}
+              canSubscribe={Boolean(
+                (session.capabilities?.resources as { subscribe?: boolean } | undefined)
+                  ?.subscribe
+              )}
+              lastUpdate={resourceUpdate}
+            />
           ) : selectedTemplate ? (
             <ResourceTemplatePanel
               sessionId={session.sessionId}
@@ -368,9 +442,35 @@ export default function App() {
                   text="Live activity: notifications pushed by the server (log messages, list-changed events) and actions taken by widgets (tool calls, follow-up messages, links)."
                 />
               </span>
-              <button className="btn btn-ghost btn-sm" onClick={() => setLog([])}>
-                Clear
-              </button>
+              <span className="history-actions">
+                {session.capabilities?.logging !== undefined && (
+                  <select
+                    className="input input-sm"
+                    title="Ask the server to send log messages at this level and above"
+                    value={logLevel}
+                    onChange={async (e) => {
+                      const level = e.target.value;
+                      setLogLevel(level);
+                      if (level)
+                        await api
+                          .setLoggingLevel(session.sessionId, level)
+                          .catch((err) => addLog(`setLevel failed: ${err.message}`));
+                    }}
+                  >
+                    <option value="">log level…</option>
+                    {["debug", "info", "notice", "warning", "error", "critical"].map(
+                      (l) => (
+                        <option key={l} value={l}>
+                          {l}
+                        </option>
+                      )
+                    )}
+                  </select>
+                )}
+                <button className="btn btn-ghost btn-sm" onClick={() => setLog([])}>
+                  Clear
+                </button>
+              </span>
             </div>
             <div className="log-entries">
               {log.length === 0 && <div className="empty-note">No events yet.</div>}
@@ -387,9 +487,25 @@ export default function App() {
 
       {historyOpen && (
         <HistoryPanel
+          sessionId={session.sessionId}
+          serverInfo={session.serverInfo}
           entries={history}
-          onClear={() => setHistory([])}
+          frames={frames}
+          onUse={handleHistoryUse}
+          onClear={() => {
+            setHistory([]);
+            setFrames([]);
+          }}
           onClose={() => setHistoryOpen(false)}
+        />
+      )}
+
+      {serverRequests.length > 0 && (
+        <ServerRequestModal
+          key={serverRequests[0].id}
+          request={serverRequests[0]}
+          onRespond={(result) => answerServerRequest(result)}
+          onReject={(error) => answerServerRequest(undefined, error)}
         />
       )}
     </div>

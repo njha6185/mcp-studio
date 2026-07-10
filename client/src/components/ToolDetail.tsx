@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CallRecord, McpTool } from "../types";
+import type { ProgressEvent } from "../api";
 import { getOpenAiTemplateUri } from "../widget/detect";
 import SchemaForm from "./SchemaForm";
 import JsonView from "./JsonView";
@@ -7,10 +8,20 @@ import ResultView from "./ResultView";
 import InfoTip from "./InfoTip";
 import * as api from "../api";
 
+export interface ToolPrefill {
+  nonce: number;
+  toolName: string;
+  args: Record<string, unknown>;
+  meta?: Record<string, unknown>;
+  autoRun: boolean;
+}
+
 interface Props {
   sessionId: string;
   tool: McpTool;
   onHostEvent: (message: string) => void;
+  prefill?: ToolPrefill | null;
+  progress?: ProgressEvent | null;
 }
 
 function defaultsFromSchema(tool: McpTool): Record<string, unknown> {
@@ -46,7 +57,13 @@ function parseMetaValue(raw: string): unknown {
   }
 }
 
-export default function ToolDetail({ sessionId, tool, onHostEvent }: Props) {
+export default function ToolDetail({
+  sessionId,
+  tool,
+  onHostEvent,
+  prefill,
+  progress,
+}: Props) {
   const [values, setValues] = useState<Record<string, unknown>>(() =>
     defaultsFromSchema(tool)
   );
@@ -71,21 +88,28 @@ export default function ToolDetail({ sessionId, tool, onHostEvent }: Props) {
     [tool, values]
   );
 
-  async function run() {
+  async function run(
+    argsOverride?: Record<string, unknown>,
+    metaOverride?: Record<string, unknown>
+  ) {
+    const args = argsOverride ?? values;
     const record: CallRecord = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      id: `call-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       toolName: tool.name,
-      args: values,
+      args,
       result: null,
       startedAt: Date.now(),
     };
     setRecords((prev) => [record, ...prev].slice(0, 20));
     setRunning(true);
     try {
-      const requestMeta: Record<string, unknown> = {};
-      for (const p of metaPairs)
-        if (p.key.trim()) requestMeta[p.key.trim()] = parseMetaValue(p.value);
-      const result = await api.callTool(sessionId, tool.name, values, requestMeta);
+      let requestMeta = metaOverride;
+      if (!requestMeta) {
+        requestMeta = {};
+        for (const p of metaPairs)
+          if (p.key.trim()) requestMeta[p.key.trim()] = parseMetaValue(p.value);
+      }
+      const result = await api.callTool(sessionId, tool.name, args, requestMeta, record.id);
       record.result = result;
     } catch (err) {
       record.error = err instanceof Error ? err.message : String(err);
@@ -95,6 +119,23 @@ export default function ToolDetail({ sessionId, tool, onHostEvent }: Props) {
       setRecords((prev) => prev.map((r) => (r.id === record.id ? { ...record } : r)));
     }
   }
+
+  // Replay / load-into-form requests coming from the History drawer.
+  const [appliedPrefill, setAppliedPrefill] = useState(0);
+  useEffect(() => {
+    if (!prefill || prefill.toolName !== tool.name || prefill.nonce === appliedPrefill)
+      return;
+    setAppliedPrefill(prefill.nonce);
+    setValues(prefill.args);
+    setMetaPairs(
+      Object.entries(prefill.meta ?? {}).map(([key, v]) => ({
+        key,
+        value: typeof v === "string" ? v : JSON.stringify(v),
+      }))
+    );
+    if (prefill.autoRun) run(prefill.args, prefill.meta ?? {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill?.nonce, tool.name]);
 
   const latest = records[0];
   const annotations = tool.annotations ?? {};
@@ -194,7 +235,7 @@ export default function ToolDetail({ sessionId, tool, onHostEvent }: Props) {
           ))}
         </div>
         <div className="run-row">
-          <button className="btn btn-primary" disabled={running} onClick={run}>
+          <button className="btn btn-primary" disabled={running} onClick={() => run()}>
             {running ? "Running…" : "▶ Run tool"}
           </button>
           {missingRequired.length > 0 && (
@@ -203,6 +244,26 @@ export default function ToolDetail({ sessionId, tool, onHostEvent }: Props) {
             </span>
           )}
         </div>
+        {running && progress && progress.callId === records[0]?.id && (
+          <div className="progress-row">
+            <div className="progress-track">
+              <div
+                className={`progress-fill ${progress.total ? "" : "indeterminate"}`}
+                style={
+                  progress.total
+                    ? { width: `${Math.min(100, (progress.progress / progress.total) * 100)}%` }
+                    : undefined
+                }
+              />
+            </div>
+            <span className="progress-label">
+              {progress.total
+                ? `${progress.progress}/${progress.total}`
+                : `${progress.progress}`}
+              {progress.message ? ` — ${progress.message}` : ""}
+            </span>
+          </div>
+        )}
       </section>
 
       {tool._meta && Object.keys(tool._meta).length > 0 && (

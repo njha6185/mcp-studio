@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { McpResource, McpResourceContents } from "../types";
 import { decodeResourceText } from "../widget/detect";
 import JsonView from "./JsonView";
@@ -8,12 +8,48 @@ import * as api from "../api";
 interface Props {
   sessionId: string;
   resource: McpResource;
+  canSubscribe?: boolean;
+  /** Bumped by App whenever a notifications/resources/updated arrives for a URI. */
+  lastUpdate?: { uri: string; ts: number } | null;
 }
 
-export default function ResourcePanel({ sessionId, resource }: Props) {
+export default function ResourcePanel({
+  sessionId,
+  resource,
+  canSubscribe,
+  lastUpdate,
+}: Props) {
   const [contents, setContents] = useState<McpResourceContents[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [subscribed, setSubscribed] = useState(false);
+
+  // Reset subscription state when switching resources.
+  useEffect(() => {
+    setSubscribed(false);
+    setContents(null);
+    setError(null);
+  }, [resource.uri]);
+
+  // Auto re-read when the server announces this resource changed.
+  useEffect(() => {
+    if (subscribed && lastUpdate?.uri === resource.uri) read();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastUpdate?.ts]);
+
+  async function toggleSubscribe() {
+    try {
+      if (subscribed) {
+        await api.unsubscribeResource(sessionId, resource.uri);
+        setSubscribed(false);
+      } else {
+        await api.subscribeResource(sessionId, resource.uri);
+        setSubscribed(true);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   async function read() {
     setBusy(true);
@@ -47,9 +83,20 @@ export default function ResourcePanel({ sessionId, resource }: Props) {
             Contents
             <InfoTip text="Resources are read-only data the server exposes by URI (files, documents, templates…). Reading sends resources/read and shows what comes back — text, HTML (previewed in a sandbox), or binary." />
           </span>
-          <button className="btn btn-primary btn-sm" disabled={busy} onClick={read}>
-            {busy ? "Reading…" : contents ? "Re-read" : "Read resource"}
-          </button>
+          <span className="history-actions">
+            {canSubscribe && (
+              <button
+                className={`btn btn-ghost btn-sm ${subscribed ? "active" : ""}`}
+                title="Subscribe to updated notifications for this resource; it re-reads automatically on change"
+                onClick={toggleSubscribe}
+              >
+                {subscribed ? "● Subscribed" : "Subscribe"}
+              </button>
+            )}
+            <button className="btn btn-primary btn-sm" disabled={busy} onClick={read}>
+              {busy ? "Reading…" : contents ? "Re-read" : "Read resource"}
+            </button>
+          </span>
         </div>
         {error && <div className="result-error">⚠ {error}</div>}
         {contents?.map((c, i) => {

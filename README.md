@@ -41,8 +41,9 @@ and **MCP-UI** (`ui://` embedded resources).
 | **Results** | Widget / Content / Raw tabs; text, images, audio, embedded resources, resource links, `structuredContent`; per-call duration and error display |
 | **Resources** | List + read with text/HTML/binary display; **resource templates** with `{variable}` inputs and live URI expansion |
 | **Prompts** | List, argument form, `prompts/get` result view |
-| **History** | Inspector-style bottom drawer recording every MCP operation (including widget-initiated calls) with expandable request/response JSON |
-| **Events** | Live server notifications (`tools/list_changed` auto-refreshes the tool list) and widget actions (follow-ups, intents, links) |
+| **History** | Inspector-style bottom drawer with two views: **Requests** (every MCP operation, including widget-initiated calls, with request/response JSON, ↻ replay, ✎ load-into-form, copy-as-curl) and **Raw frames** (every JSON-RPC message on the wire in both directions, including the initialize handshake); session export as JSON |
+| **Events** | Live server notifications — `notifications/message` log entries formatted with level/logger, `tools/list_changed` auto-refreshes, resource-updated notices — plus widget actions; log-level selector sends `logging/setLevel` |
+| **Debugging** | Output-schema validation (`schema ✓/✗` badge on results, plus SDK-level validation errors surfaced); progress bar for long-running tools (`notifications/progress`); widget **bridge inspector** (postMessage log, live `window.openai` globals, mock-toolOutput editor to re-render without calling the tool) with Inline / Mobile / Full display presets; resource subscriptions with auto re-read on `updated`; sampling & elicitation dialogs — when the server sends `sampling/createMessage` or `elicitation/create`, a modal lets you answer |
 | **UX** | Full-screen modern UI, light/dark themes (system default, persisted, propagated into widgets via `openai:set_globals`), ⓘ info tooltips explaining every MCP concept inline |
 
 ## Architecture
@@ -231,6 +232,15 @@ All endpoints are JSON over HTTP on the proxy (default `:3400`).
 | `/api/:session/resources/read` | POST | `{uri}` |
 | `/api/:session/prompts` | GET | `prompts/list` |
 | `/api/:session/prompts/get` | POST | `{name, arguments}` |
+| `/api/:session/resources/subscribe` | POST | `{uri}` — server then pushes `notifications/resources/updated` |
+| `/api/:session/resources/unsubscribe` | POST | `{uri}` |
+| `/api/:session/logging/level` | POST | `{level}` → `logging/setLevel` |
+| `/api/:session/respond` | POST | `{id, result?, error?}` — answers a server-initiated sampling/elicitation request |
+
+The `/events` SSE stream carries `notification`, `frame` (raw JSON-RPC frames,
+with the buffered handshake replayed to new subscribers), `progress`,
+`serverRequest`, and `closed` events. `tools/call` accepts an optional `callId`
+used to correlate progress events.
 
 ## Project structure
 

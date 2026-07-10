@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CallRecord, McpTool } from "../types";
+import { validateAgainstSchema } from "../schemaValidate";
 import { detectWidget, getOpenAiTemplateUri, decodeResourceText } from "../widget/detect";
 import WidgetFrame from "../widget/WidgetFrame";
 import JsonView from "./JsonView";
@@ -48,6 +49,13 @@ export default function ResultView({ sessionId, tool, record, onHostEvent }: Pro
     setTab(hasWidget ? "widget" : "content");
   }, [record.id, hasWidget]);
 
+  // Validate structuredContent against the tool's declared outputSchema.
+  const schemaIssues = useMemo(() => {
+    if (!tool.outputSchema || !result?.structuredContent) return null;
+    return validateAgainstSchema(result.structuredContent, tool.outputSchema);
+  }, [tool.outputSchema, result?.structuredContent]);
+  const [issuesOpen, setIssuesOpen] = useState(false);
+
   if (record.error) {
     return <div className="result-error">⚠ {record.error}</div>;
   }
@@ -77,6 +85,20 @@ export default function ResultView({ sessionId, tool, record, onHostEvent }: Pro
           Raw
         </button>
         <span className="result-meta">
+          {schemaIssues !== null &&
+            (schemaIssues.length === 0 ? (
+              <span className="badge badge-ok" title="structuredContent matches the tool's outputSchema">
+                schema ✓
+              </span>
+            ) : (
+              <button
+                className="badge badge-error badge-btn"
+                title="structuredContent does not match outputSchema — click for details"
+                onClick={() => setIssuesOpen(!issuesOpen)}
+              >
+                schema ✗ {schemaIssues.length}
+              </button>
+            ))}
           {result.isError ? (
             <span className="badge badge-error">tool error</span>
           ) : (
@@ -85,6 +107,18 @@ export default function ResultView({ sessionId, tool, record, onHostEvent }: Pro
           {record.durationMs !== undefined && <span>{record.durationMs} ms</span>}
         </span>
       </div>
+
+      {schemaIssues && schemaIssues.length > 0 && issuesOpen && (
+        <div className="result-error schema-issues">
+          <div>structuredContent doesn't match the declared outputSchema:</div>
+          <ul>
+            {schemaIssues.slice(0, 20).map((issue, i) => (
+              <li key={i}>{issue}</li>
+            ))}
+            {schemaIssues.length > 20 && <li>…and {schemaIssues.length - 20} more</li>}
+          </ul>
+        </div>
+      )}
 
       {tab === "widget" && widget && (
         <div className="result-widget">

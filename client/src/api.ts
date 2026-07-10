@@ -106,7 +106,8 @@ export function callTool(
   sessionId: string,
   name: string,
   args: Record<string, unknown>,
-  meta?: Record<string, unknown>
+  meta?: Record<string, unknown>,
+  callId?: string
 ): Promise<ToolCallResult> {
   const body = {
     name,
@@ -116,7 +117,7 @@ export function callTool(
   return tracked("tools/call", body, () =>
     request(`/api/${sessionId}/tools/call`, {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, callId }),
     })
   );
 }
@@ -164,22 +165,95 @@ export function getPrompt(
   );
 }
 
+export interface RawFrame {
+  seq: number;
+  dir: "send" | "recv";
+  ts: number;
+  frame: Record<string, unknown>;
+}
+
+export interface ProgressEvent {
+  callId?: string;
+  progress: number;
+  total?: number;
+  message?: string;
+}
+
+export interface ServerRequest {
+  id: string;
+  method: string;
+  params: Record<string, unknown>;
+}
+
+export interface EventHandlers {
+  onNotification?: (n: unknown) => void;
+  onFrame?: (f: RawFrame) => void;
+  onProgress?: (p: ProgressEvent) => void;
+  onServerRequest?: (r: ServerRequest) => void;
+  onClosed?: () => void;
+}
+
 export function subscribeEvents(
   sessionId: string,
-  onNotification: (n: unknown) => void,
-  onClosed: () => void
+  handlers: EventHandlers
 ): () => void {
   const es = new EventSource(`/api/${sessionId}/events`);
-  es.addEventListener("notification", (e) => {
-    try {
-      onNotification(JSON.parse((e as MessageEvent).data));
-    } catch {
-      /* ignore malformed */
-    }
-  });
+  const on = <T,>(event: string, fn?: (data: T) => void) => {
+    if (!fn) return;
+    es.addEventListener(event, (e) => {
+      try {
+        fn(JSON.parse((e as MessageEvent).data));
+      } catch {
+        /* ignore malformed */
+      }
+    });
+  };
+  on("notification", handlers.onNotification);
+  on("frame", handlers.onFrame);
+  on("progress", handlers.onProgress);
+  on("serverRequest", handlers.onServerRequest);
   es.addEventListener("closed", () => {
     es.close();
-    onClosed();
+    handlers.onClosed?.();
   });
   return () => es.close();
+}
+
+export function setLoggingLevel(sessionId: string, level: string): Promise<unknown> {
+  return tracked("logging/setLevel", { level }, () =>
+    request(`/api/${sessionId}/logging/level`, {
+      method: "POST",
+      body: JSON.stringify({ level }),
+    })
+  );
+}
+
+export function subscribeResource(sessionId: string, uri: string): Promise<unknown> {
+  return tracked("resources/subscribe", { uri }, () =>
+    request(`/api/${sessionId}/resources/subscribe`, {
+      method: "POST",
+      body: JSON.stringify({ uri }),
+    })
+  );
+}
+
+export function unsubscribeResource(sessionId: string, uri: string): Promise<unknown> {
+  return tracked("resources/unsubscribe", { uri }, () =>
+    request(`/api/${sessionId}/resources/unsubscribe`, {
+      method: "POST",
+      body: JSON.stringify({ uri }),
+    })
+  );
+}
+
+export function respondToServerRequest(
+  sessionId: string,
+  id: string,
+  result?: unknown,
+  error?: string
+): Promise<void> {
+  return request(`/api/${sessionId}/respond`, {
+    method: "POST",
+    body: JSON.stringify({ id, result, error }),
+  });
 }
