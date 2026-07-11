@@ -1,7 +1,19 @@
 # MCP Studio
 
+[![npm](https://img.shields.io/npm/v/mcp-studio)](https://www.npmjs.com/package/mcp-studio)
+
 **Web-based MCP client with a widget renderer — inspect servers, call tools, and
 render their UIs the way ChatGPT renders apps.**
+
+```bash
+npx mcp-studio --demo
+```
+
+![Tool result rendered as a live widget](docs/widget.png)
+
+| Chat simulator: an LLM drives your tools, widgets render inline | Connect: saved servers, multi-select, config import |
+|---|---|
+| ![Chat simulator](docs/chat.png) | ![Connect screen](docs/connect.png) |
 
 MCP Studio does everything you'd expect from an inspector — connect to any
 [Model Context Protocol](https://modelcontextprotocol.io) server, browse its
@@ -80,13 +92,21 @@ Vite (:5180) with hot reload and proxies `/api` to :3400.
 
 ## Getting started
 
-**Prerequisites:** Node.js ≥ 20 and npm.
+**Prerequisites:** Node.js ≥ 20 and npm. Developed and tested on
+macOS/Linux; Windows is expected to work (paths and browser-open are handled)
+but hasn't been verified — reports welcome.
 
 ### Run instantly (npx)
 
 ```bash
-npx mcp-studio
+npx mcp-studio          # plain start
+npx mcp-studio --demo   # + adds a bundled demo server with widgets to try
 ```
+
+`--demo` saves a **Demo widget server** connection (bundled
+[`examples/widget-server.mjs`](examples/widget-server.mjs)) — one click and
+you're looking at a live widget, progress bars, elicitation dialogs, and
+schema validation without writing any server code.
 
 Starts everything on one port (default 3400, next free if taken) and opens
 your browser at a **tokenized URL** — pre-authorized with your persistent

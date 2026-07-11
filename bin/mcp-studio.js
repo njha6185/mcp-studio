@@ -22,6 +22,7 @@ Usage: mcp-studio [options]
 
 Options:
   --port <n>     Port to listen on (default: 3400, next free port if taken)
+  --demo         Add the bundled demo widget server to your saved servers
   --no-open      Don't open the browser automatically
   --store <path> Data store file (default: ~/.mcp-studio/store.json)
   --no-auth      DANGEROUS: disable the session token check
@@ -67,6 +68,34 @@ if (args.includes("--no-auth")) {
     fs.mkdirSync(path.dirname(tokenFile), { recursive: true });
     fs.writeFileSync(tokenFile, token, { mode: 0o600 });
     process.env.MCP_STUDIO_TOKEN = token;
+  }
+}
+
+// --demo: seed the bundled example widget server as a saved connection in
+// the local account (the "default" tenant the launcher token maps to).
+if (args.includes("--demo")) {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const demoPath = path.join(here, "..", "examples", "widget-server.mjs");
+  const storePath = process.env.STORE_PATH;
+  let data = { tenants: {} };
+  try {
+    const raw = JSON.parse(fs.readFileSync(storePath, "utf8"));
+    data = raw.tenants ? raw : { tenants: { default: raw } };
+  } catch {
+    /* fresh store */
+  }
+  const tenant = (data.tenants.default ??= {});
+  const servers = (tenant.savedServers ??= []);
+  if (!servers.some((s) => s.name === "Demo widget server")) {
+    servers.push({
+      id: `demo-${Date.now()}`,
+      name: "Demo widget server",
+      params: { type: "stdio", command: process.execPath, args: [demoPath] },
+      createdAt: Date.now(),
+    });
+    fs.mkdirSync(path.dirname(storePath), { recursive: true });
+    fs.writeFileSync(storePath, JSON.stringify(data, null, 2));
+    console.log("Added 'Demo widget server' to your saved servers.");
   }
 }
 
