@@ -144,7 +144,7 @@ inherits it.
 ### Run from source (development)
 
 ```bash
-git clone https://github.com/njha6185/mcp-studio.git
+git clone https://github.com/njha6185/mcp-widget-studio.git
 cd mcp-studio
 npm install        # installs client + server workspaces
 npm run dev        # starts proxy (:3400) and web app (:5180) with hot reload

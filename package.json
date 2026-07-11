@@ -5,10 +5,10 @@
   "license": "UNLICENSED",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/njha6185/mcp-studio.git"
+    "url": "git+https://github.com/njha6185/mcp-widget-studio.git"
   },
-  "homepage": "https://github.com/njha6185/mcp-studio#readme",
-  "bugs": "https://github.com/njha6185/mcp-studio/issues",
+  "homepage": "https://github.com/njha6185/mcp-widget-studio#readme",
+  "bugs": "https://github.com/njha6185/mcp-widget-studio/issues",
   "keywords": [
     "mcp",
     "model-context-protocol",
