@@ -122,7 +122,7 @@ try {
 
 const token = process.env.MCP_STUDIO_TOKEN;
 const url = `http://localhost:${port}${token ? `/?token=${token}` : ""}`;
-console.log(`\n  ◈ MCP Studio ready at ${url}`);
+console.log(`\n  ◈ MCP Widget Studio ready at ${url}`);
 console.log(`  Data store: ${process.env.STORE_PATH}\n`);
 
 if (!args.includes("--no-open")) {

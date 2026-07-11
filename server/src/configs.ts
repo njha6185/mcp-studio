@@ -4,7 +4,7 @@ import path from "node:path";
 
 /**
  * Parse the common MCP client config formats (Claude Desktop, .mcp.json,
- * Cursor, VS Code-style "servers") into MCP Studio connect params.
+ * Cursor, VS Code-style "servers") into MCP Widget Studio connect params.
  */
 
 export interface ImportedServer {

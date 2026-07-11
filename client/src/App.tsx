@@ -463,7 +463,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="topbar-brand">◈ MCP Studio</div>
+        <div className="topbar-brand">◈ MCP Widget Studio</div>
         <div className="topbar-servers">
           <span
             className="status-dot"

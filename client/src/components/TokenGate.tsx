@@ -54,7 +54,7 @@ export default function TokenGate({ onUnlocked }: Props) {
       if (await api.verifyToken(candidate)) finish(candidate);
       else setError("That token was rejected — check it and try again.");
     } catch {
-      setError("Could not reach the proxy — is MCP Studio still running?");
+      setError("Could not reach the proxy — is MCP Widget Studio still running?");
     } finally {
       setBusy(false);
     }
@@ -64,7 +64,7 @@ export default function TokenGate({ onUnlocked }: Props) {
     <div className="connect-screen">
       <div className="connect-card token-gate">
         <div className="connect-logo">◈</div>
-        <h1>Welcome to MCP Studio</h1>
+        <h1>Welcome to MCP Widget Studio</h1>
         <p className="connect-sub">
           Your data here (saved servers, snapshots, chats, API keys) lives under
           a personal <code>mcps_…</code> token — it works like an account key.

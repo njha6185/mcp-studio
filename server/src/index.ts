@@ -118,7 +118,7 @@ class StudioOAuthProvider implements OAuthClientProvider {
 
   get clientMetadata(): OAuthClientMetadata {
     return {
-      client_name: "MCP Studio",
+      client_name: "MCP Widget Studio",
       redirect_uris: [this.redirectUrl],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
@@ -252,7 +252,7 @@ app.use("/api", (req, res, next) => {
   }
   res.status(401).json({
     error: multiTenant
-      ? "Unauthorized — generate or provide an MCP Studio token (mcps_…)"
+      ? "Unauthorized — generate or provide an MCP Widget Studio token (mcps_…)"
       : "Unauthorized — missing or invalid session token",
   });
 });
@@ -456,7 +456,7 @@ app.get("/api/oauth/callback", async (req, res) => {
       .send(
         `<!doctype html><body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:90vh"><div style="text-align:center"><h2>${title}</h2><p>${body}</p></div></body>`
       );
-  if (!pending) return page("Unknown authorization request", "Restart the connection from MCP Studio.", false);
+  if (!pending) return page("Unknown authorization request", "Restart the connection from MCP Widget Studio.", false);
   if (req.query.error) {
     const reason = String(req.query.error_description ?? req.query.error);
     finishPending(pending, reason);
@@ -467,7 +467,7 @@ app.get("/api/oauth/callback", async (req, res) => {
     // Tokens are now stored — connect fresh with the same provider.
     pending.session = await establishSession(pending.params, pending.provider);
     pending.status = "ready";
-    page("✓ Authorized", "You can close this tab and return to MCP Studio.", true);
+    page("✓ Authorized", "You can close this tab and return to MCP Widget Studio.", true);
   } catch (err) {
     finishPending(pending, err instanceof Error ? err.message : String(err));
     page("Authorization failed", pending.error ?? "unknown error", false);

@@ -172,7 +172,7 @@ export default function ConnectScreen({
       </div>
       <div className="connect-card">
         <div className="connect-logo">◈</div>
-        <h1>MCP Studio</h1>
+        <h1>MCP Widget Studio</h1>
         <p className="connect-sub">
           Inspect MCP servers, call tools, and render their UI widgets — the way
           ChatGPT renders apps.
