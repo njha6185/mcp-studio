@@ -27,5 +27,5 @@ Initial release.
 - **Accounts**: `mcps_…` tokens are account keys with isolated per-token
   data in one local JSON file; generate-or-paste gate; persistent local
   token for the launcher; `DISABLE_STDIO` for shared hosting.
-- **Packaging**: `npx mcp-studio` launcher (free port, browser auto-open,
+- **Packaging**: `npx mcp-widget-studio` launcher (free port, browser auto-open,
   `--demo` bundled widget server) or run from source.

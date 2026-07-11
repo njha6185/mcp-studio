@@ -9,7 +9,7 @@
  *   bad-schema    outputSchema violation (surfaces as a tool error)
  *
  * Run:  node examples/widget-server.mjs   (connect via STDIO)
- * Or:   npx mcp-studio --demo             (pre-saves this server for you)
+ * Or:   npx mcp-widget-studio --demo             (pre-saves this server for you)
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";

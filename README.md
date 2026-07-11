@@ -1,12 +1,12 @@
 # MCP Studio
 
-[![npm](https://img.shields.io/npm/v/mcp-studio)](https://www.npmjs.com/package/mcp-studio)
+[![npm](https://img.shields.io/npm/v/mcp-widget-studio)](https://www.npmjs.com/package/mcp-widget-studio)
 
 **Web-based MCP client with a widget renderer — inspect servers, call tools, and
 render their UIs the way ChatGPT renders apps.**
 
 ```bash
-npx mcp-studio --demo
+npx mcp-widget-studio --demo
 ```
 
 ![Tool result rendered as a live widget](docs/widget.png)
@@ -99,8 +99,8 @@ but hasn't been verified — reports welcome.
 ### Run instantly (npx)
 
 ```bash
-npx mcp-studio          # plain start
-npx mcp-studio --demo   # + adds a bundled demo server with widgets to try
+npx mcp-widget-studio          # plain start
+npx mcp-widget-studio --demo   # + adds a bundled demo server with widgets to try
 ```
 
 `--demo` saves a **Demo widget server** connection (bundled
@@ -127,7 +127,7 @@ cached in localStorage and shown in Settings (copy it somewhere safe —
 **token gone, data gone**).
 
 Modes:
-- **Local (`npx mcp-studio`)**: the launcher keeps one persistent token in
+- **Local (`npx mcp-widget-studio`)**: the launcher keeps one persistent token in
   `~/.mcp-studio/token`, so your data is stable across restarts and the
   browser opens pre-authorized.
 - **Hosted multi-user**: run the server without `MCP_STUDIO_TOKEN` — every
@@ -165,7 +165,7 @@ npm run build      # builds the client (client/dist) and the server (server/dist
 npm start          # one process serving UI + API on :3400
 ```
 
-`npm start` runs the same launcher as `npx mcp-studio` (free-port pick,
+`npm start` runs the same launcher as `npx mcp-widget-studio` (free-port pick,
 browser open, `~/.mcp-studio` store — flags apply).
 
 ## Using the app

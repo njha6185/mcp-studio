@@ -3,7 +3,7 @@
  * mcp-studio launcher: starts the proxy (which also serves the built UI),
  * on a free port, with a persistent per-user data store, and opens the
  * browser. Works from a cloned repo (after `npm run build`) and from the
- * published npm package (`npx mcp-studio`).
+ * published npm package (`npx mcp-widget-studio`).
  */
 import fs from "node:fs";
 import net from "node:net";
