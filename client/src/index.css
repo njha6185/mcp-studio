@@ -374,6 +374,13 @@ button { font-family: inherit; }
   word-break: break-word;
 }
 
+.token-divider {
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 12px;
+  margin: 16px 0 10px;
+}
+
 .connect-status {
   margin-top: 12px;
   padding: 10px 12px;

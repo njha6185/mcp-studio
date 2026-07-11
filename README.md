@@ -48,7 +48,8 @@ and **MCP-UI** (`ui://` embedded resources).
 | **Any LLM provider** | No framework needed: Settings has provider presets (Anthropic, OpenAI, OpenRouter, Groq, Mistral, local Ollama, or any custom OpenAI-compatible base URL). Models are **listed dynamically** from the provider's `/models` endpoint; the proxy speaks both the Anthropic Messages API and the OpenAI Chat Completions API and normalizes tool calling between them |
 | **Widget dev mode** | Point the widget at a local HTML file (Inspect → Dev template): it hot-re-renders on every save, so you iterate on a widget without touching the server |
 | **Snapshots** | 📌 Pin any tool result as an expected output; the Snapshots screen replays pinned calls and shows a structural JSON diff on mismatch (accept-new-result supported) — a lightweight regression suite |
-| **Persistence** | Saved servers, OAuth tokens, snapshots, chat conversations, LLM providers, and settings live in one local JSON file (`server/data/mcp-studio-store.json`) — no database; Settings shows the path and has per-section clear buttons |
+| **Accounts** | The `mcps_…` session token is an account key: each token gets an isolated data space (servers, snapshots, chats, keys, OAuth credentials). Generate one per browser, or paste your token on another device to open the same account — enables multi-user hosting with zero signup. Local installs keep one persistent token automatically |
+| **Persistence** | Each account's saved servers, OAuth tokens, snapshots, chat conversations, LLM providers, and settings live in one local JSON file — no database; Settings shows the path, your token (copy it!), and per-section clear buttons |
 | **Config import** | Detect `claude_desktop_config.json` / `.mcp.json` / `.cursor/mcp.json` / `.claude.json` automatically, or paste any config JSON — imported servers become named one-click connections |
 | **Health** | Periodic ping with live latency in the topbar; automatic reconnect with backoff when the connection drops (reuses cached OAuth tokens) |
 | **Completions** | Prompt arguments and resource-template variables autocomplete via `completion/complete` where the server supports it |
@@ -58,28 +59,75 @@ and **MCP-UI** (`ui://` embedded resources).
 ## Architecture
 
 ```
-┌─────────────────────┐         ┌──────────────────────┐          ┌──────────────┐
-│  Browser            │  HTTP   │  Proxy               │   MCP    │  Your MCP    │
-│  React + Vite       │ ──────▶ │  Express + MCP SDK   │ ───────▶ │  server      │
-│  localhost:5180     │  + SSE  │  localhost:3400      │          │              │
-└─────────────────────┘         └──────────────────────┘          └──────────────┘
-                                   stdio │ SSE │ streamable-HTTP
+             mcps_ token = account key (per browser / user)
+┌───────────────────┐                ┌─────────────────────────────┐
+│ Browser A ────────┼──┐   HTTP+SSE  │  MCP Studio server (:3400)  │      MCP       ┌─────────────┐
+│  React UI         │  ├───────────▶ │  ├ auth (token → account)   │ ─────────────▶ │  Your MCP   │
+├───────────────────┤  │   Bearer    │  ├ MCP sessions (SDK)       │ stdio/SSE/http │  server(s)  │
+│ Browser B ────────┼──┘   token     │  ├ serves the built UI      │                └─────────────┘
+│  (own account)    │                │  └ per-account JSON store   │      HTTPS     ┌─────────────┐
+└───────────────────┘                │     servers·chats·keys…     │ ─────────────▶ │ LLM provider│
+                                     └─────────────────────────────┘  chat simulator│ (any)       │
+                                                                                    └─────────────┘
 ```
 
-The proxy exists for the same reason MCP Inspector ships one: browsers can't
-spawn stdio processes, and remote servers often don't send CORS headers. The
-proxy holds the actual MCP client sessions and exposes a small REST API plus
-an SSE stream for server notifications.
+One Node process does everything: serves the built UI, holds the MCP client
+sessions (browsers can't spawn stdio processes, and remote servers often
+don't send CORS headers — same reason MCP Inspector ships a proxy), talks to
+the LLM provider for the chat simulator, and persists each account's data in
+one JSON file keyed by hashed token. In development the UI runs separately on
+Vite (:5180) with hot reload and proxies `/api` to :3400.
 
 ## Getting started
 
 **Prerequisites:** Node.js ≥ 20 and npm.
 
+### Run instantly (npx)
+
 ```bash
-git clone <this-repo>
+npx mcp-studio
+```
+
+Starts everything on one port (default 3400, next free if taken) and opens
+your browser at a **tokenized URL** — pre-authorized with your persistent
+local account token, so you land straight in the app. All API routes require
+the token, so random local pages can't reach the proxy (same protection as
+MCP Inspector). Your data persists in `~/.mcp-studio/store.json` across runs.
+
+```
+mcp-studio [--port <n>] [--no-open] [--store <path>] [--no-auth]
+```
+
+**The token is an account key.** Each `mcps_…` token maps to its own isolated
+data space — saved servers, snapshots, chats, LLM keys, OAuth credentials.
+Opening the app without a token in the browser shows a gate with two options:
+**generate a new token** (a fresh, empty account) or **paste an existing one**
+(open that account — e.g. the same account from another device). The token is
+cached in localStorage and shown in Settings (copy it somewhere safe —
+**token gone, data gone**).
+
+Modes:
+- **Local (`npx mcp-studio`)**: the launcher keeps one persistent token in
+  `~/.mcp-studio/token`, so your data is stable across restarts and the
+  browser opens pre-authorized.
+- **Hosted multi-user**: run the server without `MCP_STUDIO_TOKEN` — every
+  visitor generates their own account. Set `DISABLE_STDIO=1` when hosting
+  publicly (stdio lets users run commands on the host).
+- **Fixed single-account**: `MCP_STUDIO_TOKEN=<secret>` accepts only that
+  token (generation disabled).
+- `DANGEROUSLY_OMIT_AUTH=1` (or `--no-auth`) disables the check entirely —
+  not recommended.
+
+Pre-multi-account data migrates automatically: the first generated account
+inherits it.
+
+### Run from source (development)
+
+```bash
+git clone https://github.com/njha6185/mcp-studio.git
 cd mcp-studio
 npm install        # installs client + server workspaces
-npm run dev        # starts proxy (:3400) and web app (:5180) together
+npm run dev        # starts proxy (:3400) and web app (:5180) with hot reload
 ```
 
 Open **http://localhost:5180**.
@@ -90,17 +138,21 @@ the connect screen with:
 - Command: `npx`
 - Arguments: `-y @modelcontextprotocol/server-everything`
 
-### Production build
+### Production build (single process)
 
 ```bash
-npm run build      # builds the client to client/dist
+npm run build      # builds the client (client/dist) and the server (server/dist)
+npm start          # one process serving UI + API on :3400
 ```
 
-Serve `client/dist` with any static file server and run the proxy with
-`npm run start -w server` (set `PORT` to change the proxy port; the client dev
-proxy config in `client/vite.config.ts` maps `/api` → `localhost:3400`).
+`npm start` runs the same launcher as `npx mcp-studio` (free-port pick,
+browser open, `~/.mcp-studio` store — flags apply).
 
 ## Using the app
+
+0. **Account** — on first visit a gate offers **Generate new token** (fresh
+   account) or paste an existing `mcps_…` token (open that account). With the
+   `npx` launcher this is automatic. Your token is in Settings — save it.
 
 1. **Connect** — pick a transport:
    - *Streamable HTTP* — modern remote servers (`http://host/mcp`). Add
@@ -242,10 +294,15 @@ tab renders it.
 
 ## Proxy API reference
 
-All endpoints are JSON over HTTP on the proxy (default `:3400`).
+All endpoints are JSON over HTTP on the proxy (default `:3400`). Every route
+requires the account token (`Authorization: Bearer mcps_…` or `?token=`),
+except `/api/auth/*` and `/api/oauth/callback`; the token selects which
+account's data the request operates on.
 
 | Endpoint | Method | Body / notes |
 |---|---|---|
+| `/api/auth/status` | GET | Unauthenticated: `{required, canGenerate}` |
+| `/api/auth/token` | POST | Mint a new account token (multi-account mode only) → `{token}` |
 | `/api/connect` | POST | `{type: "streamable-http"\|"sse"\|"stdio", url?, headers?, command?, args?, env?}` → `{sessionId, serverInfo, capabilities}` |
 | `/api/:session/disconnect` | POST | Closes the MCP session |
 | `/api/:session/events` | GET (SSE) | `notification` events (server notifications), `closed` on disconnect |
@@ -298,12 +355,14 @@ with the buffered handshake replayed to new subscribers), `progress`,
 ## Project structure
 
 ```
-├── package.json              # npm workspaces (client, server) + dev script
+├── package.json              # publishable package (bin, files) + npm workspaces + scripts
+├── bin/mcp-studio.js         # npx launcher: free port, persistent token, opens browser
 ├── server/
-│   ├── data/                 # mcp-studio-store.json (gitignored)
+│   ├── data/                 # mcp-studio-store.json (gitignored; npx uses ~/.mcp-studio)
+│   ├── tsconfig.build.json   # emits server/dist for the published package
 │   └── src/
-│       ├── index.ts          # Express proxy: sessions, frame tap, OAuth, all endpoints
-│       ├── store.ts          # JSON-file persistence (servers, oauth, snapshots, chats, settings)
+│       ├── index.ts          # Express server: auth/accounts, MCP sessions, frame tap, OAuth, all endpoints, serves client/dist
+│       ├── store.ts          # multi-account JSON persistence (per-token tenants)
 │       ├── llm.ts            # provider adapters: Anthropic + OpenAI-compatible, model listing
 │       └── configs.ts        # MCP client config detection/parsing for import
 └── client/
@@ -316,6 +375,7 @@ with the buffered handshake replayed to new subscribers), `progress`,
         ├── schemaValidate.ts # outputSchema checker for results/mocks
         ├── jsonDiff.ts       # structural diff for snapshot runs
         ├── components/
+        │   ├── TokenGate.tsx          # account gate: generate / paste token
         │   ├── ConnectScreen.tsx      # transports, saved servers, multi-select, import
         │   ├── ToolDetail.tsx         # schema form, annotations, _meta, progress, results
         │   ├── SchemaForm.tsx         # JSON Schema → form fields
@@ -357,6 +417,13 @@ with the buffered handshake replayed to new subscribers), `progress`,
 - **Widget renders blank** — open the browser devtools; the widget's own
   errors appear in the console. Verify `structuredContent` (the widget's
   `toolOutput`) in the Content tab — a schema mismatch is the usual cause.
+- **401 Unauthorized / token gate keeps appearing** — the browser has no
+  valid account token. Generate one at the gate, or with the launcher check
+  `~/.mcp-studio/token`. Curl users: append `?token=mcps_…` or send
+  `Authorization: Bearer mcps_…`.
+- **My data disappeared** — you're probably in a different account: tokens
+  select data spaces. Paste your original token (Settings → Copy token on the
+  device that has it) at the gate.
 
 ## Security notes
 
@@ -364,13 +431,22 @@ with the buffered handshake replayed to new subscribers), `progress`,
   so they can't read cookies/localStorage or call the proxy directly; the only
   host surface is the postMessage bridge, and `openExternal`/links are
   restricted to `http(s)`.
-- The proxy can launch arbitrary local commands (that's what the STDIO
-  transport is). **Never expose port 3400 beyond localhost.**
+- All `/api` routes require an account token (Bearer header or `?token=`),
+  which blocks drive-by requests from random local pages (the MCP Inspector
+  CVE-2025-49596 attack) and isolates each account's data; `/api/auth/*` and
+  `/api/oauth/callback` are the only exemptions (the latter protected by the
+  per-flow OAuth `state`).
+- The STDIO transport lets an authenticated user run arbitrary commands on
+  the host — fine locally, dangerous when hosted. **Set `DISABLE_STDIO=1` on
+  any shared or public deployment**, put TLS in front (tokens travel in
+  headers/URLs), and remember accounts share the host's resources.
+- The token is the only key to an account — it's shown in Settings (copy it
+  somewhere safe); there is no recovery if it's lost.
 - Headers you enter (e.g. bearer tokens) are stored in browser localStorage as
-  part of "recent connections", and saved servers / OAuth tokens / LLM API
-  keys / chat transcripts live in plaintext in
-  `server/data/mcp-studio-store.json`. On a shared machine, use the clear
-  buttons in Settings (or delete the file).
+  part of "recent connections", and each account's saved servers / OAuth
+  tokens / LLM API keys / chat transcripts live in plaintext in the store
+  file. On a shared machine, use the clear buttons in Settings (or delete the
+  file).
 - LLM API keys are only ever sent to the base URL you configured for that
   provider; chat transcripts (including tool results) are sent to the active
   LLM provider as conversation context.

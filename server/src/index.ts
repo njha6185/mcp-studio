@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -19,10 +19,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  store,
+  getTenant,
+  tenantIdFor,
+  adoptDefaultTenant,
   persist,
   clearSection,
   STORE_PATH,
+  DEFAULT_TENANT,
+  type StoreData,
   type Snapshot,
   type LlmProvider,
   type ChatConversation,
@@ -30,19 +34,21 @@ import {
 import { detectConfigs, parseConfigJson } from "./configs.js";
 import { chatComplete, listModels } from "./llm.js";
 
-// Migrate the legacy single-Anthropic-key setting into the provider registry.
-if (store.settings.anthropicApiKey && !(store.settings.providers ?? []).length) {
-  const provider: LlmProvider = {
-    id: randomUUID(),
-    name: "Anthropic",
-    kind: "anthropic",
-    baseUrl: "https://api.anthropic.com/v1",
-    apiKey: store.settings.anthropicApiKey,
-  };
-  store.settings.providers = [provider];
-  store.settings.activeProviderId = provider.id;
-  delete store.settings.anthropicApiKey;
-  persist();
+/** Migrate the legacy single-Anthropic-key setting into the provider registry. */
+function migrateTenant(tenant: StoreData) {
+  if (tenant.settings.anthropicApiKey && !(tenant.settings.providers ?? []).length) {
+    const provider: LlmProvider = {
+      id: randomUUID(),
+      name: "Anthropic",
+      kind: "anthropic",
+      baseUrl: "https://api.anthropic.com/v1",
+      apiKey: tenant.settings.anthropicApiKey,
+    };
+    tenant.settings.providers = [provider];
+    tenant.settings.activeProviderId = provider.id;
+    delete tenant.settings.anthropicApiKey;
+    persist();
+  }
 }
 import {
   CreateMessageRequestSchema,
@@ -81,9 +87,6 @@ const sessions = new Map<string, Session>();
 // OAuth support for remote servers
 // ---------------------------------------------------------------------------
 
-/** Credentials keyed by server URL, persisted in the JSON store. */
-const oauthStore = store.oauth;
-
 interface PendingAuth {
   params: ConnectRequest;
   provider: StudioOAuthProvider;
@@ -104,7 +107,9 @@ class StudioOAuthProvider implements OAuthClientProvider {
 
   constructor(
     private serverUrl: string,
-    private stateId: string
+    private stateId: string,
+    /** The owning account's data — OAuth credentials are per-tenant. */
+    private tenant: StoreData
   ) {}
 
   get redirectUrl(): string {
@@ -126,10 +131,10 @@ class StudioOAuthProvider implements OAuthClientProvider {
   }
 
   private record() {
-    let rec = oauthStore[this.serverUrl];
+    let rec = this.tenant.oauth[this.serverUrl];
     if (!rec) {
       rec = {};
-      oauthStore[this.serverUrl] = rec;
+      this.tenant.oauth[this.serverUrl] = rec;
     }
     rec.savedAt = Date.now();
     persist();
@@ -137,7 +142,7 @@ class StudioOAuthProvider implements OAuthClientProvider {
   }
 
   clientInformation() {
-    return oauthStore[this.serverUrl]?.clientInformation as
+    return this.tenant.oauth[this.serverUrl]?.clientInformation as
       | OAuthClientInformationMixed
       | undefined;
   }
@@ -145,7 +150,7 @@ class StudioOAuthProvider implements OAuthClientProvider {
     this.record().clientInformation = info as Record<string, unknown>;
   }
   tokens() {
-    return oauthStore[this.serverUrl]?.tokens as OAuthTokens | undefined;
+    return this.tenant.oauth[this.serverUrl]?.tokens as OAuthTokens | undefined;
   }
   saveTokens(tokens: OAuthTokens) {
     this.record().tokens = tokens as unknown as Record<string, unknown>;
@@ -154,7 +159,7 @@ class StudioOAuthProvider implements OAuthClientProvider {
     this.record().codeVerifier = verifier;
   }
   codeVerifier(): string {
-    const v = oauthStore[this.serverUrl]?.codeVerifier;
+    const v = this.tenant.oauth[this.serverUrl]?.codeVerifier;
     if (!v) throw new Error("No PKCE code verifier saved for this server");
     return v;
   }
@@ -162,9 +167,9 @@ class StudioOAuthProvider implements OAuthClientProvider {
     this.authorizationUrl = url.toString();
   }
   invalidateCredentials?(scope: "all" | "client" | "tokens" | "verifier") {
-    const rec = oauthStore[this.serverUrl];
+    const rec = this.tenant.oauth[this.serverUrl];
     if (!rec) return;
-    if (scope === "all") delete oauthStore[this.serverUrl];
+    if (scope === "all") delete this.tenant.oauth[this.serverUrl];
     if (scope === "client") delete rec.clientInformation;
     if (scope === "tokens") delete rec.tokens;
     if (scope === "verifier") delete rec.codeVerifier;
@@ -181,9 +186,97 @@ interface ConnectRequest {
   headers?: Record<string, string>;
 }
 
+/**
+ * The session token is an ACCOUNT KEY, not an instance password. Each token
+ * (format mcps_<48 hex>) maps to its own isolated data space — saved servers,
+ * snapshots, conversations, LLM providers, OAuth credentials. Anyone may
+ * generate a token (a new empty account); presenting a token selects that
+ * account. Token gone → that account's data is orphaned.
+ *
+ * Modes:
+ *  - DANGEROUSLY_OMIT_AUTH: auth off, everything under the "default" tenant
+ *  - MCP_STUDIO_TOKEN env (the launcher sets this): fixed single-account
+ *    mode — only that token is accepted, data lives in the "default" tenant
+ *    so local installs keep their data across launcher restarts
+ *  - otherwise: multi-account — any well-formed token is a valid account
+ */
+const authDisabled = Boolean(process.env.DANGEROUSLY_OMIT_AUTH);
+const fixedToken = authDisabled ? null : (process.env.MCP_STUDIO_TOKEN || null);
+const multiTenant = !authDisabled && !fixedToken;
+
+export function newStudioToken(): string {
+  return `mcps_${randomBytes(24).toString("hex")}`;
+}
+
+const TOKEN_SHAPE = /^mcps_[0-9a-f]{48}$/;
+
+function fixedTokenMatches(candidate: string): boolean {
+  if (!fixedToken) return false;
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(fixedToken);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
+
+/** The account (tenant) data for this request, set by the auth middleware. */
+function tenantOf(res: express.Response): StoreData {
+  return res.locals.tenant as StoreData;
+}
+
+app.use("/api", (req, res, next) => {
+  const attach = (tenantId: string) => {
+    const tenant = getTenant(tenantId);
+    migrateTenant(tenant);
+    res.locals.tenant = tenant;
+    next();
+  };
+  if (authDisabled) return attach(DEFAULT_TENANT);
+  // OAuth redirects come from the identity provider and can't carry our
+  // token (protected by the per-flow `state`); /auth/* is the gate surface.
+  if (req.path === "/oauth/callback" || req.path.startsWith("/auth/")) return next();
+
+  const header = req.headers.authorization;
+  const candidate = header?.startsWith("Bearer ")
+    ? header.slice(7)
+    : typeof req.query.token === "string"
+      ? req.query.token
+      : undefined;
+
+  if (fixedToken) {
+    if (candidate && fixedTokenMatches(candidate)) return attach(DEFAULT_TENANT);
+  } else if (candidate && TOKEN_SHAPE.test(candidate)) {
+    return attach(tenantIdFor(candidate));
+  }
+  res.status(401).json({
+    error: multiTenant
+      ? "Unauthorized — generate or provide an MCP Studio token (mcps_…)"
+      : "Unauthorized — missing or invalid session token",
+  });
+});
+
+app.get("/api/auth/status", (_req, res) => {
+  res.json({ required: !authDisabled, canGenerate: multiTenant });
+});
+
+// Mint a new account token. Always available in multi-account mode — a fresh
+// token is a fresh, empty, isolated data space. The first account generated
+// on an upgraded instance inherits the legacy pre-multi-tenant data.
+app.post("/api/auth/token", (_req, res) => {
+  if (!multiTenant)
+    return void res.status(403).json({
+      error: authDisabled
+        ? "Auth is disabled on this instance"
+        : "This instance uses a fixed token — ask the operator for it",
+    });
+  const token = newStudioToken();
+  const inherited = adoptDefaultTenant(tenantIdFor(token));
+  getTenant(tenantIdFor(token));
+  persist();
+  res.json({ token, inherited });
+});
 
 function sseWrite(res: express.Response, event: string, data: unknown) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -242,6 +335,10 @@ function buildTransport(
 ): Transport {
   const { type, url, command, args, env, headers } = params;
   if (type === "stdio") {
+    if (process.env.DISABLE_STDIO)
+      throw new Error(
+        "STDIO transport is disabled on this instance (DISABLE_STDIO) — use a streamable-HTTP or SSE server"
+      );
     if (!command) throw new Error("command is required for stdio");
     return new StdioClientTransport({
       command,
@@ -320,7 +417,9 @@ app.post("/api/connect", async (req, res) => {
   const isRemote = params.type === "sse" || params.type === "streamable-http";
   const stateId = randomUUID();
   const provider =
-    isRemote && params.url ? new StudioOAuthProvider(params.url, stateId) : undefined;
+    isRemote && params.url
+      ? new StudioOAuthProvider(params.url, stateId, tenantOf(res))
+      : undefined;
   try {
     res.json(await establishSession(params, provider));
   } catch (err) {
@@ -620,26 +719,26 @@ app.post("/api/configs/parse", (req, res) => {
 // Persistent store: saved servers, snapshots, oauth viewer, settings
 // ---------------------------------------------------------------------------
 
-app.get("/api/store/servers", (_req, res) => res.json({ servers: store.savedServers }));
+app.get("/api/store/servers", (_req, res) => res.json({ servers: tenantOf(res).savedServers }));
 
 app.post("/api/store/servers", (req, res) => {
   const { name, params } = req.body ?? {};
   if (!name || !params) return void res.status(400).json({ error: "name and params required" });
-  const existing = store.savedServers.find((s) => s.name === name);
+  const existing = tenantOf(res).savedServers.find((s) => s.name === name);
   if (existing) existing.params = params;
   else
-    store.savedServers.push({ id: randomUUID(), name, params, createdAt: Date.now() });
+    tenantOf(res).savedServers.push({ id: randomUUID(), name, params, createdAt: Date.now() });
   persist();
-  res.json({ servers: store.savedServers });
+  res.json({ servers: tenantOf(res).savedServers });
 });
 
 app.delete("/api/store/servers/:id", (req, res) => {
-  store.savedServers = store.savedServers.filter((s) => s.id !== req.params.id);
+  tenantOf(res).savedServers = tenantOf(res).savedServers.filter((s) => s.id !== req.params.id);
   persist();
-  res.json({ servers: store.savedServers });
+  res.json({ servers: tenantOf(res).savedServers });
 });
 
-app.get("/api/store/snapshots", (_req, res) => res.json({ snapshots: store.snapshots }));
+app.get("/api/store/snapshots", (_req, res) => res.json({ snapshots: tenantOf(res).snapshots }));
 
 app.post("/api/store/snapshots", (req, res) => {
   const { name, serverName, toolName, args, meta, expected } = req.body ?? {};
@@ -655,13 +754,13 @@ app.post("/api/store/snapshots", (req, res) => {
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
-  store.snapshots.push(snapshot);
+  tenantOf(res).snapshots.push(snapshot);
   persist();
   res.json({ snapshot });
 });
 
 app.put("/api/store/snapshots/:id", (req, res) => {
-  const snapshot = store.snapshots.find((s) => s.id === req.params.id);
+  const snapshot = tenantOf(res).snapshots.find((s) => s.id === req.params.id);
   if (!snapshot) return void res.status(404).json({ error: "Unknown snapshot" });
   if (req.body?.expected !== undefined) snapshot.expected = req.body.expected;
   if (req.body?.name) snapshot.name = req.body.name;
@@ -671,14 +770,14 @@ app.put("/api/store/snapshots/:id", (req, res) => {
 });
 
 app.delete("/api/store/snapshots/:id", (req, res) => {
-  store.snapshots = store.snapshots.filter((s) => s.id !== req.params.id);
+  tenantOf(res).snapshots = tenantOf(res).snapshots.filter((s) => s.id !== req.params.id);
   persist();
   res.json({ ok: true });
 });
 
 app.get("/api/store/conversations", (_req, res) => {
   res.json({
-    conversations: [...store.conversations]
+    conversations: [...tenantOf(res).conversations]
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((c) => ({
         id: c.id,
@@ -691,7 +790,7 @@ app.get("/api/store/conversations", (_req, res) => {
 });
 
 app.get("/api/store/conversations/:id", (req, res) => {
-  const conversation = store.conversations.find((c) => c.id === req.params.id);
+  const conversation = tenantOf(res).conversations.find((c) => c.id === req.params.id);
   if (!conversation) return void res.status(404).json({ error: "Unknown conversation" });
   res.json({ conversation });
 });
@@ -700,7 +799,7 @@ app.post("/api/store/conversations", (req, res) => {
   const { id, title, messages, toolRuns, usage } = req.body ?? {};
   if (!Array.isArray(messages))
     return void res.status(400).json({ error: "messages required" });
-  let conversation = id ? store.conversations.find((c) => c.id === id) : undefined;
+  let conversation = id ? tenantOf(res).conversations.find((c) => c.id === id) : undefined;
   if (conversation) {
     conversation.title = title || conversation.title;
     conversation.messages = messages;
@@ -717,21 +816,21 @@ app.post("/api/store/conversations", (req, res) => {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     } satisfies ChatConversation;
-    store.conversations.push(conversation);
-    if (store.conversations.length > 100) store.conversations.shift();
+    tenantOf(res).conversations.push(conversation);
+    if (tenantOf(res).conversations.length > 100) tenantOf(res).conversations.shift();
   }
   persist();
   res.json({ conversation: { id: conversation.id } });
 });
 
 app.delete("/api/store/conversations/:id", (req, res) => {
-  store.conversations = store.conversations.filter((c) => c.id !== req.params.id);
+  tenantOf(res).conversations = tenantOf(res).conversations.filter((c) => c.id !== req.params.id);
   persist();
   res.json({ ok: true });
 });
 
 app.get("/api/store/oauth", (_req, res) => {
-  const entries = Object.entries(store.oauth).map(([url, rec]) => {
+  const entries = Object.entries(tenantOf(res).oauth).map(([url, rec]) => {
     const tokens = rec.tokens as { access_token?: string; expires_in?: number; scope?: string } | undefined;
     return {
       serverUrl: url,
@@ -747,18 +846,18 @@ app.get("/api/store/oauth", (_req, res) => {
 
 app.delete("/api/store/oauth", (req, res) => {
   const url = req.query.url ? String(req.query.url) : null;
-  if (url) delete store.oauth[url];
-  else clearSection("oauth");
+  if (url) delete tenantOf(res).oauth[url];
+  else clearSection(tenantOf(res), "oauth");
   persist();
   res.json({ ok: true });
 });
 
-function activeProvider(): LlmProvider | null {
+function activeProvider(tenant: StoreData): LlmProvider | null {
   return (
-    (store.settings.providers ?? []).find(
-      (p) => p.id === store.settings.activeProviderId
+    (tenant.settings.providers ?? []).find(
+      (p) => p.id === tenant.settings.activeProviderId
     ) ??
-    (store.settings.providers ?? [])[0] ??
+    (tenant.settings.providers ?? [])[0] ??
     null
   );
 }
@@ -775,13 +874,13 @@ function redactProvider(p: LlmProvider) {
 }
 
 app.get("/api/store/settings", (_req, res) => {
-  const active = activeProvider();
+  const active = activeProvider(tenantOf(res));
   res.json({
-    providers: (store.settings.providers ?? []).map(redactProvider),
+    providers: (tenantOf(res).settings.providers ?? []).map(redactProvider),
     activeProviderId: active?.id ?? null,
-    chatModel: store.settings.chatModel ?? null,
+    chatModel: tenantOf(res).settings.chatModel ?? null,
     activeProvider: active
-      ? { name: active.name, kind: active.kind, model: store.settings.chatModel ?? null }
+      ? { name: active.name, kind: active.kind, model: tenantOf(res).settings.chatModel ?? null }
       : null,
     storePath: STORE_PATH,
   });
@@ -792,7 +891,7 @@ app.post("/api/llm/providers", (req, res) => {
   if (kind !== "anthropic" && kind !== "openai")
     return void res.status(400).json({ error: "kind must be anthropic or openai" });
   if (!baseUrl) return void res.status(400).json({ error: "baseUrl required" });
-  const providers = (store.settings.providers ??= []);
+  const providers = (tenantOf(res).settings.providers ??= []);
   const existing = id ? providers.find((p) => p.id === id) : undefined;
   if (existing) {
     existing.name = name || existing.name;
@@ -807,24 +906,25 @@ app.post("/api/llm/providers", (req, res) => {
       apiKey: apiKey || undefined,
     };
     providers.push(provider);
-    if (!store.settings.activeProviderId) store.settings.activeProviderId = provider.id;
+    if (!tenantOf(res).settings.activeProviderId) tenantOf(res).settings.activeProviderId = provider.id;
   }
   persist();
   res.json({ providers: providers.map(redactProvider) });
 });
 
 app.delete("/api/llm/providers/:id", (req, res) => {
-  store.settings.providers = (store.settings.providers ?? []).filter(
+  const settings = tenantOf(res).settings;
+  settings.providers = (settings.providers ?? []).filter(
     (p) => p.id !== req.params.id
   );
-  if (store.settings.activeProviderId === req.params.id)
-    store.settings.activeProviderId = store.settings.providers[0]?.id;
+  if (settings.activeProviderId === req.params.id)
+    settings.activeProviderId = settings.providers[0]?.id;
   persist();
-  res.json({ providers: store.settings.providers.map(redactProvider) });
+  res.json({ providers: settings.providers.map(redactProvider) });
 });
 
 app.get("/api/llm/providers/:id/models", async (req, res) => {
-  const provider = (store.settings.providers ?? []).find(
+  const provider = (tenantOf(res).settings.providers ?? []).find(
     (p) => p.id === req.params.id
   );
   if (!provider) return void res.status(404).json({ error: "Unknown provider" });
@@ -837,15 +937,15 @@ app.get("/api/llm/providers/:id/models", async (req, res) => {
 
 app.post("/api/llm/active", (req, res) => {
   const { providerId, model } = req.body ?? {};
-  if (providerId) store.settings.activeProviderId = providerId;
-  if (model !== undefined) store.settings.chatModel = model || undefined;
+  if (providerId) tenantOf(res).settings.activeProviderId = providerId;
+  if (model !== undefined) tenantOf(res).settings.chatModel = model || undefined;
   persist();
   res.json({ ok: true });
 });
 
 app.delete("/api/store", (req, res) => {
-  const section = String(req.query.section ?? "all") as Parameters<typeof clearSection>[0];
-  clearSection(section);
+  const section = String(req.query.section ?? "all") as Parameters<typeof clearSection>[1];
+  clearSection(tenantOf(res), section);
   res.json({ ok: true });
 });
 
@@ -857,12 +957,12 @@ app.delete("/api/store", (req, res) => {
 app.post("/api/:sessionId/chat", async (req, res) => {
   const session = getSession(req, res);
   if (!session) return;
-  const provider = activeProvider();
+  const provider = activeProvider(tenantOf(res));
   if (!provider)
     return void res
       .status(400)
       .json({ error: "No LLM provider configured — add one in Settings" });
-  const model = req.body?.model || store.settings.chatModel;
+  const model = req.body?.model || tenantOf(res).settings.chatModel;
   if (!model)
     return void res
       .status(400)
@@ -912,8 +1012,26 @@ if (fs.existsSync(path.join(clientDist, "index.html"))) {
 }
 
 app.listen(PORT, () => {
-  const ui = fs.existsSync(path.join(clientDist, "index.html"))
-    ? " (serving the built UI too)"
-    : "";
-  console.log(`MCP proxy listening on http://localhost:${PORT}${ui}`);
+  const hasUi = fs.existsSync(path.join(clientDist, "index.html"));
+  console.log(
+    `MCP proxy listening on http://localhost:${PORT}${hasUi ? " (serving the built UI too)" : ""}`
+  );
+  if (authDisabled) {
+    console.log(
+      "⚠ Auth disabled (DANGEROUSLY_OMIT_AUTH) — any local page can reach this proxy"
+    );
+  } else if (fixedToken) {
+    console.log(`Fixed session token: ${fixedToken}`);
+    if (hasUi)
+      console.log(`\n  Open: http://localhost:${PORT}/?token=${fixedToken}\n`);
+    else
+      console.log(
+        `\n  Dev UI: http://localhost:5180/?token=${fixedToken} (once Vite is up)\n`
+      );
+  } else {
+    console.log(
+      "Multi-account mode: each browser generates its own mcps_ token (its account key)."
+    );
+  }
+  if (process.env.DISABLE_STDIO) console.log("STDIO transport disabled (DISABLE_STDIO).");
 });

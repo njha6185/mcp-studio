@@ -1,16 +1,52 @@
 {
-  "name": "chatgpt-mcp-renderer",
-  "private": true,
+  "name": "mcp-studio",
   "version": "0.1.0",
+  "description": "Web-based MCP client with a widget renderer — inspect servers, call tools, and render their UIs the way ChatGPT renders apps. Supports OpenAI Apps SDK & MCP-UI.",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/njha6185/mcp-studio.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-client",
+    "mcp-inspector",
+    "openai-apps-sdk",
+    "mcp-ui",
+    "devtools"
+  ],
+  "type": "module",
+  "bin": {
+    "mcp-studio": "bin/mcp-studio.js"
+  },
+  "files": [
+    "bin",
+    "server/dist",
+    "client/dist",
+    "README.md"
+  ],
   "workspaces": [
     "client",
     "server"
   ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "concurrently -n proxy,web -c yellow,cyan \"npm run dev -w server\" \"npm run dev -w client\"",
-    "build": "npm run build -w client"
+    "build": "npm run build -w client && npm run build:server",
+    "build:server": "tsc -p server/tsconfig.build.json",
+    "start": "node bin/mcp-studio.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.2"
   }
 }

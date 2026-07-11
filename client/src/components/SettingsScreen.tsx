@@ -142,6 +142,28 @@ export default function SettingsScreen({ onClose }: Props) {
         <section className="panel">
           <div className="panel-title">
             <span>
+              Account token
+              <InfoTip text="Your mcps_ token is the key to everything saved here — servers, snapshots, chats, API keys. Use it in another browser or device to open the same account. If you lose it, the data can't be recovered." />
+            </span>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => {
+                const token = api.authToken();
+                if (token) navigator.clipboard.writeText(token);
+              }}
+            >
+              Copy token
+            </button>
+          </div>
+          <div className="field-desc">
+            <code>{api.authToken()?.slice(0, 12) ?? "none"}…</code> — keep it
+            somewhere safe; it's this account's only key.
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-title">
+            <span>
               LLM providers
               <InfoTip text="The Chat simulator can use any provider. 'anthropic' speaks the Anthropic Messages API; 'openai' speaks the OpenAI-compatible API used by OpenAI, OpenRouter, Groq, Mistral, Ollama, LM Studio, and most others. Models are fetched live from the provider. Keys are stored only in the local JSON file." />
             </span>

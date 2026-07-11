@@ -69,13 +69,78 @@ async function tracked<T>(
   }
 }
 
+const TOKEN_KEY = "mcp-studio-token";
+
+/**
+ * Session token: from ?token= (printed by the proxy / opened by the launcher),
+ * cached in localStorage so subsequent visits need no URL param. When the
+ * proxy restarts with a new token, requests 401 and the token gate reappears.
+ */
+export function authToken(): string | null {
+  const fromUrl = new URLSearchParams(window.location.search).get("token");
+  if (fromUrl) {
+    localStorage.setItem(TOKEN_KEY, fromUrl);
+    return fromUrl;
+  }
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function saveAuthToken(token: string) {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+/** Check a candidate token against the proxy without persisting it. */
+export async function verifyToken(token: string): Promise<boolean> {
+  const res = await fetch("/api/store/settings", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return res.ok;
+}
+
+/** Probe whether our current token (if any) is accepted. */
+export async function checkAuth(): Promise<boolean> {
+  const token = authToken();
+  const res = await fetch("/api/store/settings", {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  return res.status !== 401;
+}
+
+/** Unauthenticated: is auth on, and can this instance mint new account tokens? */
+export async function authStatus(): Promise<{ required: boolean; canGenerate: boolean }> {
+  const res = await fetch("/api/auth/status");
+  return res.json();
+}
+
+/** Mint a fresh account token (a new, empty, isolated data space). */
+export async function generateToken(): Promise<string> {
+  const res = await fetch("/api/auth/token", { method: "POST" });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error ?? `${res.status}`);
+  return body.token;
+}
+
+/** Append the token as a query param (for EventSource, which can't set headers). */
+function tokenized(path: string): string {
+  const token = authToken();
+  if (!token) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}token=${token}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = authToken();
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
+    // Token missing or stale (e.g. proxy restarted): surface the token gate.
+    if (res.status === 401) window.dispatchEvent(new Event("mcp-auth-required"));
     throw new Error(
       (body as { error?: string }).error ?? `${res.status} ${res.statusText}`
     );
@@ -223,7 +288,7 @@ export function subscribeEvents(
   sessionId: string,
   handlers: EventHandlers
 ): () => void {
-  const es = new EventSource(`/api/${sessionId}/events`);
+  const es = new EventSource(tokenized(`/api/${sessionId}/events`));
   const on = <T,>(event: string, fn?: (data: T) => void) => {
     if (!fn) return;
     es.addEventListener(event, (e) => {

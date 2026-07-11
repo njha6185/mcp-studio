@@ -16,6 +16,7 @@ import PromptPanel from "./components/PromptPanel";
 import { getOpenAiTemplateUri } from "./widget/detect";
 import InfoTip from "./components/InfoTip";
 import TopMenu from "./components/TopMenu";
+import TokenGate from "./components/TokenGate";
 import HistoryPanel, { type HistoryUseMode } from "./components/HistoryPanel";
 import SnapshotsScreen from "./components/SnapshotsScreen";
 import SettingsScreen from "./components/SettingsScreen";
@@ -80,6 +81,17 @@ export default function App() {
   >("workspace");
   const [devTick, setDevTick] = useState(0);
   const [latencyMap, setLatencyMap] = useState<Record<string, number | null>>({});
+
+  const [authOk, setAuthOk] = useState<boolean | null>(null);
+
+  // Verify the cached/URL token once at startup, and re-gate on any 401
+  // (e.g. the proxy restarted with a fresh token).
+  useEffect(() => {
+    api.checkAuth().then(setAuthOk);
+    const onAuthRequired = () => setAuthOk(false);
+    window.addEventListener("mcp-auth-required", onAuthRequired);
+    return () => window.removeEventListener("mcp-auth-required", onAuthRequired);
+  }, []);
 
   const session = sessions.find((s) => s.sessionId === focusedId) ?? sessions[0] ?? null;
   const sessionsRef = useRef(sessions);
@@ -176,9 +188,14 @@ export default function App() {
     for (const params of paramsList) await connect(params);
   }
 
+  // User-initiated disconnects must not trigger the auto-reconnect that
+  // handles unexpected drops — the proxy fires the same "closed" event.
+  const intentionalDisconnects = useRef(new Set<string>());
+
   async function disconnect(sessionId?: string) {
     const target = sessionId ?? session?.sessionId;
     if (!target) return;
+    intentionalDisconnects.current.add(target);
     await api.disconnect(target).catch(() => {});
     removeSession(target);
   }
@@ -272,6 +289,7 @@ export default function App() {
         },
         onDevWidget: () => setDevTick((t) => t + 1),
         onClosed: () => {
+          if (intentionalDisconnects.current.delete(s.sessionId)) return;
           addLog(`${tag}connection closed — attempting to reconnect`);
           removeSession(s.sessionId);
           reconnect(s.params, name);
@@ -371,6 +389,11 @@ export default function App() {
     () => prompts.filter((p) => !q || p.name.toLowerCase().includes(q)),
     [prompts, q]
   );
+
+  if (authOk === null) return null; // one-probe splash, avoids UI flash
+  if (authOk === false) {
+    return <TokenGate onUnlocked={() => setAuthOk(true)} />;
+  }
 
   if (view === "settings") {
     return <SettingsScreen onClose={() => setView("workspace")} />;
