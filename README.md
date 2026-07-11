@@ -158,6 +158,11 @@ the connect screen with:
 - Command: `npx`
 - Arguments: `-y @modelcontextprotocol/server-everything`
 
+### Deploy for free (GCP + CI/CD)
+
+See [docs/deploy-gcp.md](docs/deploy-gcp.md) — always-free `e2-micro` VM,
+HTTPS via Caddy + DuckDNS, and GitHub Actions auto-deploy on every push.
+
 ### Production build (single process)
 
 ```bash

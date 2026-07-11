@@ -1,0 +1,54 @@
+name: Deploy to VM
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Package release
+        run: tar czf release.tgz bin server/dist client/dist examples package.json package-lock.json
+
+      - name: Copy to VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          source: release.tgz
+          target: /tmp/
+
+      - name: Install & restart
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            set -e
+            tar xzf /tmp/release.tgz -C /opt/mcp-widget-studio
+            cd /opt/mcp-widget-studio
+            npm ci --omit=dev
+            sudo systemctl restart mcp-widget-studio
+            sleep 2
+            curl -sf http://localhost:3400/api/auth/status
+            echo " — deployed OK"
