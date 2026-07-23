@@ -1,4 +1,4 @@
-# MCP Studio
+# MCP Widget Studio
 
 [![npm](https://img.shields.io/npm/v/mcp-widget-studio)](https://www.npmjs.com/package/mcp-widget-studio)
 [![license](https://img.shields.io/npm/l/mcp-widget-studio)](LICENSE)
@@ -16,7 +16,7 @@ npx mcp-widget-studio --demo
 |---|---|
 | ![Widget](docs/widget.png) | ![Chat simulator](docs/chat.png) |
 
-MCP Studio does everything you'd expect from an inspector — connect to any
+MCP Widget Studio does everything you'd expect from an inspector — connect to any
 [Model Context Protocol](https://modelcontextprotocol.io) server, browse its
 tools / resources / prompts, call tools from auto-generated forms, watch the
 request history — and adds the piece inspectors are missing: when a tool
@@ -74,7 +74,7 @@ and **MCP-UI** (`ui://` embedded resources).
 ```
              mcps_ token = account key (per browser / user)
 ┌───────────────────┐                ┌─────────────────────────────┐
-│ Browser A ────────┼──┐   HTTP+SSE  │  MCP Studio server (:3400)  │      MCP       ┌─────────────┐
+│ Browser A ────────┼──┐   HTTP+SSE  │  MCP Widget Studio (:3400)  │      MCP       ┌─────────────┐
 │  React UI         │  ├───────────▶ │  ├ auth (token → account)   │ ─────────────▶ │  Your MCP   │
 ├───────────────────┤  │   Bearer    │  ├ MCP sessions (SDK)       │ stdio/SSE/http │  server(s)  │
 │ Browser B ────────┼──┘   token     │  ├ serves the built UI      │                └─────────────┘
