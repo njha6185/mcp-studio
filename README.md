@@ -10,11 +10,11 @@ render their UIs the way ChatGPT renders apps.**
 npx mcp-widget-studio --demo
 ```
 
-![Tool result rendered as a live widget](docs/widget.png)
+![Connect a server, run a tool, and watch its result render as a live widget](docs/demo.gif)
 
-| Chat simulator: an LLM drives your tools, widgets render inline | Connect: saved servers, multi-select, config import |
+| Tool result as a live widget | Chat simulator: an LLM drives your tools, widgets inline |
 |---|---|
-| ![Chat simulator](docs/chat.png) | ![Connect screen](docs/connect.png) |
+| ![Widget](docs/widget.png) | ![Chat simulator](docs/chat.png) |
 
 MCP Studio does everything you'd expect from an inspector — connect to any
 [Model Context Protocol](https://modelcontextprotocol.io) server, browse its
