@@ -2,7 +2,7 @@
   "name": "mcp-widget-studio",
   "version": "0.1.1",
   "description": "Web-based MCP client with a widget renderer — inspect servers, call tools, and render their UIs the way ChatGPT renders apps. Supports OpenAI Apps SDK & MCP-UI.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "author": "Nitish Jha <njha6185@gmail.com>",
   "repository": {
     "type": "git",

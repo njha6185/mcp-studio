@@ -1,6 +1,7 @@
 # MCP Studio
 
 [![npm](https://img.shields.io/npm/v/mcp-widget-studio)](https://www.npmjs.com/package/mcp-widget-studio)
+[![license](https://img.shields.io/npm/l/mcp-widget-studio)](LICENSE)
 
 **Web-based MCP client with a widget renderer — inspect servers, call tools, and
 render their UIs the way ChatGPT renders apps.**
