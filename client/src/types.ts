@@ -7,6 +7,8 @@ export interface ConnectParams {
   args?: string[];
   env?: Record<string, string>;
   headers?: Record<string, string>;
+  /** Skip TLS cert verification for this connection (local dev / self-signed). */
+  insecureTls?: boolean;
 }
 
 export interface ServerInfo {

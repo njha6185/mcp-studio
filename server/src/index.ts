@@ -18,6 +18,7 @@ import type {
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 import {
   getTenant,
   tenantIdFor,
@@ -184,6 +185,21 @@ interface ConnectRequest {
   args?: string[];
   env?: Record<string, string>;
   headers?: Record<string, string>;
+  /** Skip TLS certificate verification for THIS connection (local dev / self-signed). */
+  insecureTls?: boolean;
+}
+
+/**
+ * A fetch bound to an undici dispatcher that skips TLS verification — scoped
+ * to a single connection so it never affects OAuth, LLM, or other requests.
+ * For local dev against self-signed HTTPS MCP servers only.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function insecureFetch(url: any, init?: any): any {
+  return undiciFetch(url, {
+    ...(init ?? {}),
+    dispatcher: new UndiciAgent({ connect: { rejectUnauthorized: false } }),
+  });
 }
 
 /**
@@ -348,15 +364,21 @@ function buildTransport(
     });
   }
   if (!url) throw new Error(`url is required for ${type}`);
+  const fetchOpt = params.insecureTls ? { fetch: insecureFetch as never } : {};
   if (type === "sse") {
     return new SSEClientTransport(new URL(url), {
       requestInit: { headers: headers ?? {} },
       authProvider,
+      ...(params.insecureTls
+        ? { eventSourceInit: { fetch: insecureFetch as never } }
+        : {}),
+      ...fetchOpt,
     });
   }
   return new StreamableHTTPClientTransport(new URL(url), {
     requestInit: { headers: headers ?? {} },
     authProvider,
+    ...fetchOpt,
   });
 }
 

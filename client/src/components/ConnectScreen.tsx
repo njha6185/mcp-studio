@@ -48,6 +48,7 @@ export default function ConnectScreen({
   const [command, setCommand] = useState("");
   const [argsText, setArgsText] = useState("");
   const [headersText, setHeadersText] = useState("");
+  const [insecureTls, setInsecureTls] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<SavedServer[]>([]);
@@ -79,7 +80,12 @@ export default function ConnectScreen({
         if (idx > 0) headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
       }
     }
-    return { type, url: url.trim(), headers };
+    return {
+      type,
+      url: url.trim(),
+      headers,
+      ...(insecureTls ? { insecureTls: true } : {}),
+    };
   }
 
   async function submit(params?: ConnectParams) {
@@ -253,6 +259,21 @@ export default function ConnectScreen({
                 value={headersText}
                 onChange={(e) => setHeadersText(e.target.value)}
               />
+            </div>
+            <div className="field field-row">
+              <input
+                id="insecure-tls"
+                type="checkbox"
+                checked={insecureTls}
+                onChange={(e) => setInsecureTls(e.target.checked)}
+              />
+              <div>
+                <label className="field-label" htmlFor="insecure-tls">
+                  <span className="field-name">Skip TLS verification</span>
+                  <span className="field-required">insecure</span>
+                  <InfoTip text="Accept self-signed / untrusted certificates for THIS connection only — for local dev against an HTTPS MCP server with a self-signed cert (no effect on plain http). Never enable for a server you don't fully trust: it disables man-in-the-middle protection. Does not affect OAuth or LLM requests." />
+                </label>
+              </div>
             </div>
           </>
         )}

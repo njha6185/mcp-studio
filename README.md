@@ -48,7 +48,7 @@ and **MCP-UI** (`ui://` embedded resources).
 
 | Area | What you get |
 |---|---|
-| **Connect** | Streamable HTTP, SSE, and STDIO transports; custom HTTP headers (e.g. `Authorization`); **OAuth** for protected remote servers (discovery, dynamic client registration, PKCE — authorize in a browser tab, tokens cached per server URL for reconnects); recent connections remembered |
+| **Connect** | Streamable HTTP, SSE, and STDIO transports; custom HTTP headers (e.g. `Authorization`); **OAuth** for protected remote servers (discovery, dynamic client registration, PKCE — authorize in a browser tab, tokens cached per server URL for reconnects); an optional per-connection "skip TLS verification" toggle for local dev against self-signed HTTPS servers; recent connections remembered |
 | **Tools** | List with search; title/description; annotation chips (read-only / destructive / idempotent / open-world with ✓ / ✕ / undeclared states); input schema as a generated form *or* raw JSON; tool `_meta` viewer; optional request `_meta` key-value pairs sent with `tools/call` |
 | **Widgets** | Tools with UI metadata get a ✦ badge and a **Widget** result tab rendering the live UI; widget-initiated `callTool` round-trips through the real session; fullscreen mode; auto-height |
 | **Results** | Widget / Content / Raw tabs; text, images, audio, embedded resources, resource links, `structuredContent`; per-call duration and error display |
@@ -476,3 +476,8 @@ with the buffered handshake replayed to new subscribers), `progress`,
 - LLM API keys are only ever sent to the base URL you configured for that
   provider; chat transcripts (including tool results) are sent to the active
   LLM provider as conversation context.
+- "Skip TLS verification" disables certificate checking for that one
+  connection only (never global — OAuth and LLM requests keep full
+  verification). It exists for local dev against self-signed certs; enabling
+  it against an untrusted server exposes that connection to
+  man-in-the-middle interception.
