@@ -47,12 +47,16 @@ multi-account mode (every visitor generates their own `mcps_…` account token).
    ```
 2. On the **VM** (browser SSH): append that public key line to
    `~/.ssh/authorized_keys`.
-3. In the **GitHub repo** → Settings → Secrets and variables → Actions, add:
-   | Secret | Value |
-   |---|---|
-   | `VM_HOST` | the static IP |
-   | `VM_USER` | your username on the VM (shown in the SSH prompt) |
-   | `VM_SSH_KEY` | contents of `~/.ssh/mcp-deploy` (the **private** key) |
+3. In the **GitHub repo** → Settings → Secrets and variables → Actions:
+   - Under **Secrets**, add:
+     | Secret | Value |
+     |---|---|
+     | `VM_HOST` | the static IP |
+     | `VM_USER` | your username on the VM (shown in the SSH prompt) |
+     | `VM_SSH_KEY` | contents of `~/.ssh/mcp-deploy` (the **private** key) |
+   - Under **Variables**, add `DEPLOY_ENABLED` = `true`. The deploy workflow
+     is gated on this, so it stays dormant (no failing runs) until you've
+     finished VM setup and flip it on.
 
 ## 5. Deploy
 

@@ -12,6 +12,12 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Only runs once you've set up the VM and enabled it, so it doesn't fail
+    # (and email you) on every push before deployment is configured.
+    # Enable with: repo → Settings → Secrets and variables → Actions →
+    # Variables → new variable DEPLOY_ENABLED = true (after adding the
+    # VM_HOST / VM_USER / VM_SSH_KEY secrets from docs/deploy-gcp.md).
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
     steps:
       - uses: actions/checkout@v4
 
